@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-config-commands"
+description = "Allows reading and saving app configuration"
+commands.allow = [
+    "get_config",
+    "save_config",
+]

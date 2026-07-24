@@ -1,0 +1,13 @@
+[[permission]]
+identifier = "allow-utility-commands"
+description = "Allows file dialogs, opening terminals/explorer, system-info/env-var introspection, and quitting the app"
+commands.allow = [
+    "open_folder_dialog",
+    "open_terminal",
+    "open_in_explorer",
+    "get_system_info",
+    "get_filtered_env_vars",
+    "detect_package_manager",
+    "get_package_info",
+    "quit_app",
+]

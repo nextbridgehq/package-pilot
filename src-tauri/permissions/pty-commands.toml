@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "allow-pty-commands"
+description = "Allows spawning and interacting with integrated-terminal PTY sessions"
+commands.allow = [
+    "spawn_pty",
+    "write_pty",
+    "resize_pty",
+    "kill_pty",
+    "attach_pty",
+]

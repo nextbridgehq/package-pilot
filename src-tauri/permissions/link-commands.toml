@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-link-commands"
+description = "Allows link creation/removal and the standalone link_via_* commands"
+commands.allow = [
+    "create_link",
+    "remove_link",
+    "list_active_links",
+    "toggle_link_watch",
+    "get_watch_command",
+    "link_via_symlink",
+    "link_via_pack",
+    "link_via_yalc",
+    "link_via_workspace",
+]

@@ -1,0 +1,15 @@
+[[permission]]
+identifier = "allow-project-commands"
+description = "Allows project add/remove/scan/sandbox commands"
+commands.allow = [
+    "add_project",
+    "remove_project",
+    "remove_package",
+    "list_projects",
+    "refresh_project",
+    "scan_project",
+    "check_package_cli",
+    "create_sandbox",
+    "run_sandbox_script",
+    "get_package_scripts",
+]

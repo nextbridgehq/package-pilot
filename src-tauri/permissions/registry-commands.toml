@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-registry-commands"
+description = "Allows local npm registry lifecycle and publish commands"
+commands.allow = [
+    "start_registry",
+    "stop_registry",
+    "publish_to_registry",
+    "list_registry_packages",
+]

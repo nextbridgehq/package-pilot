@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-watcher-commands"
+description = "Allows filesystem watcher start/stop/status commands"
+commands.allow = [
+    "start_watching",
+    "stop_watching",
+    "get_watcher_status",
+]

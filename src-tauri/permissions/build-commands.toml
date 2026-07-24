@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-build-commands"
+description = "Allows build and install commands"
+commands.allow = [
+    "run_build",
+    "run_install",
+]

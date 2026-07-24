@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-logs-commands"
+description = "Allows reading and clearing the application activity log"
+commands.allow = [
+    "get_logs",
+    "clear_logs",
+]
