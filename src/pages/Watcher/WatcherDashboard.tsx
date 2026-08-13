@@ -14,7 +14,6 @@ import {
   DismissRegular,
 } from "@fluentui/react-icons";
 import { IPC_EVENTS } from "../../constants/ipc";
-import { LinkStatus } from "../../types/link";
 import { formatLinkMethod } from "../../utils/formatters";
 import { useLinkStore } from "../../store/useLinkStore";
 import { useWatcherStore } from "../../store/useWatcherStore";

@@ -13,7 +13,7 @@ import {
   DismissCircleRegular,
   WindowConsoleRegular,
 } from "@fluentui/react-icons";
-import { DiagnosticResult } from "../../services/tauriApi";
+import { DiagnosticResult } from "../../bindings";
 import { useTerminalStore } from "../../store/useTerminalStore";
 import { useSharedStyles } from "../../styles/useSharedStyles";
 import { mergeClasses } from "@fluentui/react-components";

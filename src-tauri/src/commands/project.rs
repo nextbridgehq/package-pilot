@@ -8,10 +8,31 @@ use tauri::State;
 
 use crate::services::project::{detect_pm, scan_packages};
 
-pub fn add_project_impl(
+static DIR_SIZE_CACHE: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, (f64, std::time::Instant)>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn get_size_cached(path: &str) -> Option<f64> {
+    let cache = DIR_SIZE_CACHE.lock().unwrap();
+    if let Some((size, timestamp)) = cache.get(path) {
+        if timestamp.elapsed() < std::time::Duration::from_secs(60) {
+            return Some(*size);
+        }
+    }
+    None
+}
+
+fn set_size_cached(path: &str, size: f64) {
+    let mut cache = DIR_SIZE_CACHE.lock().unwrap();
+    cache.insert(path.to_string(), (size, std::time::Instant::now()));
+}
+
+/// Pure, blocking project builder — no AppState reference, safe to pass into
+/// `spawn_blocking`. Reads the file system synchronously but never touches any
+/// Mutex, so it cannot deadlock or starve the async runtime.
+fn build_project(
     path: String,
     only_cli: Option<bool>,
-    app_state: &AppState,
+    default_pm: String,
 ) -> Result<Project, AppError> {
     let project_path = Path::new(&path);
 
@@ -39,51 +60,21 @@ pub fn add_project_impl(
 
     let mut package_manager = detect_pm(project_path);
     if package_manager == crate::models::project::PackageManager::Unknown {
-        package_manager = match app_state
-            .persistent
-            .lock_safe()
-            .config
-            .clone()
-            .unwrap_or_default()
-            .general
-            .default_package_manager
-            .as_str()
-        {
+        package_manager = match default_pm.as_str() {
             "pnpm" => crate::models::project::PackageManager::Pnpm,
             "yarn" => crate::models::project::PackageManager::Yarn,
             _ => crate::models::project::PackageManager::Npm,
         };
     }
-    let modified = std::fs::metadata(&package_json_path)
-        .and_then(|m| m.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-    let cached = app_state.scan_cache.lock_safe().get(&path).cloned();
-    let mut packages = if let Some((cached_time, cached_result)) = cached {
-        if cached_time == modified {
-            cached_result
-        } else {
-            let res = scan_packages(project_path, &[]);
-            app_state
-                .scan_cache
-                .lock_safe()
-                .insert(path.clone(), (modified, res.clone()));
-            res
-        }
-    } else {
-        let res = scan_packages(project_path, &[]);
-        app_state
-            .scan_cache
-            .lock_safe()
-            .insert(path.clone(), (modified, res.clone()));
-        res
-    };
-
+    let mut packages = scan_packages(project_path, &[]);
     if only_cli.unwrap_or(false) {
         packages.retain(|pkg| pkg.has_cli);
     }
 
-    let project = Project {
+    let workspace_tool = crate::utils::workspace_resolver::detect_workspace_tool(project_path);
+
+    Ok(Project {
         id: uuid::Uuid::new_v4().to_string(),
         name,
         path: path.clone(),
@@ -91,9 +82,29 @@ pub fn add_project_impl(
         packages,
         ignored_packages: Vec::new(),
         only_cli: only_cli.unwrap_or(false),
+        workspace_tool,
         created_at: chrono::Utc::now(),
         last_accessed: chrono::Utc::now(),
-    };
+    })
+}
+
+/// Legacy sync wrapper kept for unit-test compatibility.
+pub fn add_project_impl(
+    path: String,
+    only_cli: Option<bool>,
+    app_state: &AppState,
+) -> Result<Project, AppError> {
+    let default_pm = app_state
+        .persistent
+        .lock_safe()
+        .config
+        .clone()
+        .unwrap_or_default()
+        .general
+        .default_package_manager
+        .clone();
+
+    let project = build_project(path, only_cli, default_pm)?;
 
     app_state
         .persistent
@@ -113,24 +124,41 @@ pub async fn add_project(
     only_cli: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Project, AppError> {
-    match add_project_impl(path, only_cli, &state) {
-        Ok(project) => {
-            state.add_log(
-                LogLevel::Success,
-                format!("Added project \"{}\"", project.name),
-                "ProjectManager".to_string(),
-            );
-            Ok(project)
-        }
-        Err(e) => {
-            state.add_log(
-                LogLevel::Error,
-                format!("Failed to add project: {}", e),
-                "ProjectManager".to_string(),
-            );
-            Err(e)
-        }
+    // 1. Read config while holding the lock for the shortest possible time.
+    let default_pm = state
+        .persistent
+        .lock_safe()
+        .config
+        .clone()
+        .unwrap_or_default()
+        .general
+        .default_package_manager
+        .clone();
+
+    // 2. Run ALL blocking file-system work on a dedicated blocking thread so
+    //    the async runtime (and therefore the UI) stays fully responsive.
+    let project = tokio::task::spawn_blocking(move || {
+        build_project(path, only_cli, default_pm)
+    })
+    .await
+    .map_err(|e| AppError::Generic(format!("Task join error: {}", e)))??;
+
+    // 3. Commit the result to state (fast, just a Vec push + flag set).
+    {
+        state
+            .persistent
+            .lock_safe()
+            .projects
+            .push(project.clone());
+        state.save();
     }
+
+    state.add_log(
+        LogLevel::Success,
+        format!("Added project \"{}\"", project.name),
+        "ProjectManager".to_string(),
+    );
+    Ok(project)
 }
 
 pub fn remove_project_impl(project_id: String, app_state: &AppState) -> Result<(), AppError> {
@@ -302,51 +330,7 @@ pub async fn remove_package(
 #[specta::specta]
 
 pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, AppError> {
-    let projects = state.persistent.lock_safe().projects.clone();
-    let mut result = Vec::new();
-
-    for mut project in projects {
-        let project_path = Path::new(&project.path);
-        project.package_manager = detect_pm(project_path);
-
-        let package_json_path = project_path.join("package.json");
-        let modified = std::fs::metadata(&package_json_path)
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-        let cached_res = {
-            let cache = state.scan_cache.lock_safe();
-            if let Some((cached_modified, cached_packages)) = cache.get(&project.path) {
-                if *cached_modified == modified {
-                    Some(cached_packages.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        let res = if let Some(cached) = cached_res {
-            cached
-        } else {
-            let mut scanned = scan_packages(project_path, &[]);
-            scanned.retain(|pkg| !project.ignored_packages.contains(&pkg.name));
-            if project.only_cli {
-                scanned.retain(|pkg| pkg.has_cli);
-            }
-            state
-                .scan_cache
-                .lock_safe()
-                .insert(project.path.clone(), (modified, scanned.clone()));
-            scanned
-        };
-
-        project.packages = res;
-        result.push(project);
-    }
-
-    Ok(result)
+    Ok(state.persistent.lock_safe().projects.clone())
 }
 
 #[tauri::command]
@@ -369,24 +353,18 @@ pub async fn refresh_project(
         project.path.clone()
     };
 
-    let project_path = Path::new(&project_path_str);
-    let package_manager = detect_pm(project_path);
-
-    let package_json_path = project_path.join("package.json");
-    let modified = std::fs::metadata(&package_json_path)
-        .and_then(|m| m.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-    let mut res = scan_packages(project_path, &[]);
-
-    if only_cli {
-        res.retain(|pkg| pkg.has_cli);
-    }
-
-    state
-        .scan_cache
-        .lock_safe()
-        .insert(project_path_str.clone(), (modified, res.clone()));
+    let (package_manager, res) = tokio::task::spawn_blocking(move || {
+        let project_path = Path::new(&project_path_str);
+        let package_manager = detect_pm(project_path);
+        let mut res = scan_packages(project_path, &[]);
+        
+        if only_cli {
+            res.retain(|pkg| pkg.has_cli);
+        }
+        (package_manager, res)
+    })
+    .await
+    .map_err(|e| AppError::Generic(format!("Task join error: {}", e)))?;
 
     let mut persistent_guard = state.persistent.lock_safe();
     let projects_guard = &mut persistent_guard.projects;
@@ -408,30 +386,17 @@ pub async fn refresh_project(
 
 pub async fn scan_project(
     path: String,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<Vec<PackageInfo>, String> {
-    let project_path = Path::new(&path);
-    let package_json_path = project_path.join("package.json");
-
-    let modified = std::fs::metadata(&package_json_path)
-        .and_then(|m| m.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-    if let Some((cached_time, cached_result)) = state.scan_cache.lock_safe().get(&path) {
-        if *cached_time == modified {
-            return Ok(cached_result.clone());
-        }
-    }
-
-    let result = scan_packages(project_path, &[]);
-    state
-        .scan_cache
-        .lock_safe()
-        .insert(path, (modified, result.clone()));
-    Ok(result)
+    tokio::task::spawn_blocking(move || {
+        let project_path = Path::new(&path);
+        scan_packages(project_path, &[])
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 
 pub fn create_sandbox(
@@ -621,48 +586,18 @@ pub fn check_package_cli(path: String) -> bool {
     false
 }
 
-#[derive(Debug, Serialize, specta::Type)]
+#[derive(Debug, Serialize, specta::Type, Clone)]
 pub struct ScriptInfo {
     pub name: String,
     pub command: String,
     pub is_lifecycle: bool,
     pub risk_level: String, // "low", "medium", "high"
+    pub threat_categories: Vec<String>,
+    pub risk_explanation: Option<String>,
 }
-
-const LIFECYCLE_SCRIPTS: &[&str] = &[
-    "preinstall",
-    "install",
-    "postinstall",
-    "prepublish",
-    "prepublishOnly",
-    "prepare",
-    "prepack",
-    "postpack",
-    "preuninstall",
-    "uninstall",
-    "postuninstall",
-];
-
-const HIGH_RISK_PATTERNS: &[&str] = &[
-    "curl ",
-    "wget ",
-    "powershell",
-    "cmd /c",
-    "cmd.exe",
-    "eval(",
-    "eval ",
-    "child_process",
-    "rimraf ",
-    "rm -rf",
-    "del /",
-    "sudo ",
-    "chmod ",
-    "chown ",
-];
 
 #[tauri::command]
 #[specta::specta]
-
 pub fn get_package_scripts(path: String) -> Result<Vec<ScriptInfo>, AppError> {
     let pkg_json_path = Path::new(&path).join("package.json");
     let content = std::fs::read_to_string(&pkg_json_path)
@@ -674,23 +609,408 @@ pub fn get_package_scripts(path: String) -> Result<Vec<ScriptInfo>, AppError> {
     if let Some(script_obj) = pkg.get("scripts").and_then(|s| s.as_object()) {
         for (name, command) in script_obj {
             let cmd_str = command.as_str().unwrap_or("");
-            let is_lifecycle = LIFECYCLE_SCRIPTS.contains(&name.as_str());
-            let risk_level = if HIGH_RISK_PATTERNS.iter().any(|p| cmd_str.contains(p)) {
-                "high"
-            } else if is_lifecycle {
-                "medium"
-            } else {
-                "low"
-            };
+            let analysis = crate::utils::script_analyzer::analyze_script(name, cmd_str);
+            let is_lifecycle = analysis.risk_level == "medium"
+                || matches!(
+                    name.as_str(),
+                    "preinstall"
+                        | "install"
+                        | "postinstall"
+                        | "prepublish"
+                        | "prepublishOnly"
+                        | "prepare"
+                        | "prepack"
+                        | "postpack"
+                        | "preuninstall"
+                        | "uninstall"
+                        | "postuninstall"
+                );
+
             scripts.push(ScriptInfo {
                 name: name.clone(),
                 command: cmd_str.to_string(),
                 is_lifecycle,
-                risk_level: risk_level.to_string(),
+                risk_level: analysis.risk_level.to_string(),
+                threat_categories: analysis.threat_categories,
+                risk_explanation: Some(analysis.explanation),
             });
         }
     }
     Ok(scripts)
+}
+
+/// Rejects a task name that could break out of the command written into the
+/// PTY shell. These strings are interpreted by a real shell, so metacharacters
+/// are a genuine injection vector.
+fn validate_task_name(task: &str) -> Result<(), AppError> {
+    if task.is_empty() {
+        return Err(AppError::Generic("Task name is required".to_string()));
+    }
+    if task.chars().any(char::is_whitespace) {
+        return Err(AppError::Generic(
+            "Task name cannot contain whitespace".to_string(),
+        ));
+    }
+    crate::utils::validation::validate_shell_arg(task)
+}
+
+/// Command that runs `task` across every package in the workspace.
+/// Pure so the per-tool matrix is unit-testable.
+pub fn workspace_task_command(
+    tool: &crate::models::project::WorkspaceTool,
+    task: &str,
+) -> Result<String, AppError> {
+    use crate::models::project::WorkspaceTool as W;
+    validate_task_name(task)?;
+    Ok(match tool {
+        W::Turbo => format!("npx turbo run {}", task),
+        W::Lerna => format!("npx lerna run {}", task),
+        W::Pnpm => format!("pnpm -r run {}", task),
+        W::Yarn => format!("yarn workspaces run {}", task),
+        W::Npm => format!("npm run {} --workspaces --if-present", task),
+        W::None => {
+            return Err(AppError::Generic(
+                "This project is not a workspace, so workspace tasks cannot run".to_string(),
+            ))
+        }
+    })
+}
+
+/// Command that runs `task` for a single package in the workspace.
+pub fn package_task_command(
+    tool: &crate::models::project::WorkspaceTool,
+    task: &str,
+    package_name: &str,
+) -> Result<String, AppError> {
+    use crate::models::project::WorkspaceTool as W;
+    validate_task_name(task)?;
+    crate::utils::validation::sanitize_package_name(package_name)?;
+    Ok(match tool {
+        W::Turbo => format!("npx turbo run {} --filter={}", task, package_name),
+        W::Lerna => format!("npx lerna run {} --scope={}", task, package_name),
+        W::Pnpm => format!("pnpm --filter {} run {}", package_name, task),
+        W::Yarn => format!("yarn workspace {} run {}", package_name, task),
+        W::Npm => format!("npm run {} --workspace={} --if-present", task, package_name),
+        W::None => {
+            return Err(AppError::Generic(
+                "This project is not a workspace, so package tasks cannot run".to_string(),
+            ))
+        }
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn run_workspace_task(
+    project_id: String,
+    task: String,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    pty_state: tauri::State<'_, crate::state::app_state::PtyState>,
+) -> Result<String, AppError> {
+    let project = {
+        let persistent = state.persistent.lock_safe();
+        persistent.projects.iter().find(|p| p.id == project_id).cloned()
+    };
+
+    let project = match project {
+        Some(p) => p,
+        None => return Err(AppError::Generic("Project not found".to_string())),
+    };
+
+    let command_str = workspace_task_command(&project.workspace_tool, &task)?;
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    crate::commands::pty::spawn_pty(window, pty_state.clone(), state.clone(), session_id.clone(), project.path.clone(), 120, 30)
+        .map_err(AppError::Generic)?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let cmd_with_newline = format!("{}\r", command_str);
+    crate::commands::pty::write_pty(pty_state, session_id.clone(), cmd_with_newline)
+        .map_err(AppError::Generic)?;
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn run_package_task(
+    project_id: String,
+    package_name: String,
+    task: String,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    pty_state: tauri::State<'_, crate::state::app_state::PtyState>,
+) -> Result<String, AppError> {
+    let project = {
+        let persistent = state.persistent.lock_safe();
+        persistent.projects.iter().find(|p| p.id == project_id).cloned()
+    };
+
+    let project = match project {
+        Some(p) => p,
+        None => return Err(AppError::Generic("Project not found".to_string())),
+    };
+
+    let command_str = package_task_command(&project.workspace_tool, &task, &package_name)?;
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    crate::commands::pty::spawn_pty(window, pty_state.clone(), state.clone(), session_id.clone(), project.path.clone(), 120, 30)
+        .map_err(AppError::Generic)?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let cmd_with_newline = format!("{}\r", command_str);
+    crate::commands::pty::write_pty(pty_state, session_id.clone(), cmd_with_newline)
+        .map_err(AppError::Generic)?;
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn run_security_audit(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<String, String> {
+    let project = {
+        let persistent = state.persistent.lock_safe();
+        persistent.projects.iter().find(|p| p.id == project_id).cloned()
+    };
+
+    let project = match project {
+        Some(p) => p,
+        None => return Err("Project not found".to_string()),
+    };
+
+    let program = match project.package_manager {
+        crate::models::project::PackageManager::Npm => "npm",
+        crate::models::project::PackageManager::Pnpm => "pnpm",
+        crate::models::project::PackageManager::Yarn => "yarn",
+        _ => return Err("Unsupported package manager for security audit".to_string()),
+    };
+
+    let cmd_name = crate::commands::cmd_name(program);
+    let output = tokio::process::Command::new(cmd_name)
+        .arg("audit")
+        .arg("--json")
+        .current_dir(&project.path)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            let stdout_str = String::from_utf8_lossy(&out.stdout).to_string();
+            if stdout_str.trim().is_empty() && !out.status.success() {
+                let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
+                return Err(format!("Command failed: {}", stderr_str));
+            }
+            Ok(stdout_str)
+        }
+        Err(e) => Err(format!("Failed to execute command: {}", e)),
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_directory_size(path: String) -> Result<f64, String> {
+    if let Some(size) = get_size_cached(&path) {
+        return Ok(size);
+    }
+    
+    let path_clone = path.clone();
+    let size = tokio::task::spawn_blocking(move || {
+        let mut total_size = 0;
+        let mut iterator = walkdir::WalkDir::new(&path_clone).into_iter();
+        loop {
+            let entry = match iterator.next() {
+                Some(Ok(entry)) => entry,
+                Some(Err(_)) => continue,
+                None => break,
+            };
+
+            // Ignore .git and node_modules directories
+            if entry.file_type().is_dir() && (entry.file_name() == ".git" || entry.file_name() == "node_modules") {
+                iterator.skip_current_dir();
+                continue;
+            }
+
+            if entry.file_type().is_file() {
+                if let Ok(metadata) = entry.metadata() {
+                    total_size += metadata.len();
+                }
+            }
+        }
+        total_size as f64
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?;
+    
+    set_size_cached(&path, size);
+    Ok(size)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_directory_sizes(paths: Vec<String>) -> Result<std::collections::HashMap<String, f64>, String> {
+    let mut results = std::collections::HashMap::new();
+    let mut to_calculate = Vec::new();
+    
+    for path in paths {
+        if let Some(size) = get_size_cached(&path) {
+            results.insert(path, size);
+        } else {
+            to_calculate.push(path);
+        }
+    }
+    
+    if !to_calculate.is_empty() {
+        let calculated = tokio::task::spawn_blocking(move || {
+            let mut calc_results = std::collections::HashMap::new();
+            for path in to_calculate {
+                let mut total_size = 0;
+                let mut iterator = walkdir::WalkDir::new(&path).into_iter();
+                loop {
+                    let entry = match iterator.next() {
+                        Some(Ok(entry)) => entry,
+                        Some(Err(_)) => continue,
+                        None => break,
+                    };
+
+                    if entry.file_type().is_dir() && (entry.file_name() == ".git" || entry.file_name() == "node_modules") {
+                        iterator.skip_current_dir();
+                        continue;
+                    }
+
+                    if entry.file_type().is_file() {
+                        if let Ok(metadata) = entry.metadata() {
+                            total_size += metadata.len();
+                        }
+                    }
+                }
+                calc_results.insert(path, total_size as f64);
+            }
+            calc_results
+        })
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?;
+        
+        for (path, size) in calculated {
+            set_size_cached(&path, size);
+            results.insert(path, size);
+        }
+    }
+    
+    Ok(results)
+}
+
+#[cfg(test)]
+mod workspace_task_tests {
+    use super::*;
+    use crate::models::project::WorkspaceTool as W;
+
+    /// Every tool the UI renders task buttons for must produce a command.
+    /// `WorkspaceTasks` shows the buttons whenever workspace_tool != None, so
+    /// any tool rejected here is a button that silently does nothing.
+    #[test]
+    fn every_non_none_workspace_tool_supports_the_standard_tasks() {
+        for tool in [W::Turbo, W::Lerna, W::Pnpm, W::Yarn, W::Npm] {
+            for task in ["dev", "build", "test", "lint"] {
+                let cmd = workspace_task_command(&tool, task).unwrap_or_else(|e| {
+                    panic!("{:?} + {} should be supported, got {:?}", tool, task, e)
+                });
+                assert!(
+                    cmd.contains(task),
+                    "{:?} command {:?} should reference the task",
+                    tool,
+                    cmd
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_non_none_workspace_tool_supports_package_scoped_tasks() {
+        for tool in [W::Turbo, W::Lerna, W::Pnpm, W::Yarn, W::Npm] {
+            let cmd = package_task_command(&tool, "dev", "@scope/api")
+                .unwrap_or_else(|e| panic!("{:?} should support package tasks, got {:?}", tool, e));
+            assert!(cmd.contains("@scope/api"), "got {:?}", cmd);
+            assert!(cmd.contains("dev"), "got {:?}", cmd);
+        }
+    }
+
+    #[test]
+    fn pnpm_npm_and_yarn_use_their_own_native_workspace_syntax() {
+        assert_eq!(
+            workspace_task_command(&W::Pnpm, "build").unwrap(),
+            "pnpm -r run build"
+        );
+        assert_eq!(
+            workspace_task_command(&W::Yarn, "build").unwrap(),
+            "yarn workspaces run build"
+        );
+        assert_eq!(
+            workspace_task_command(&W::Npm, "build").unwrap(),
+            "npm run build --workspaces --if-present"
+        );
+        assert_eq!(
+            package_task_command(&W::Pnpm, "build", "api").unwrap(),
+            "pnpm --filter api run build"
+        );
+    }
+
+    #[test]
+    fn turbo_and_lerna_keep_their_existing_commands() {
+        assert_eq!(
+            workspace_task_command(&W::Turbo, "build").unwrap(),
+            "npx turbo run build"
+        );
+        assert_eq!(
+            package_task_command(&W::Lerna, "build", "api").unwrap(),
+            "npx lerna run build --scope=api"
+        );
+    }
+
+    #[test]
+    fn a_non_workspace_project_is_rejected() {
+        assert!(workspace_task_command(&W::None, "build").is_err());
+        assert!(package_task_command(&W::None, "build", "api").is_err());
+    }
+
+    // These strings are written into a live PTY shell, so metacharacters must
+    // never survive into the command.
+    #[test]
+    fn shell_metacharacters_in_the_task_name_are_rejected() {
+        for task in [
+            "build; rm -rf /",
+            "build && whoami",
+            "build | cat",
+            "$(whoami)",
+            "build\nwhoami",
+            "",
+            "two words",
+        ] {
+            assert!(
+                workspace_task_command(&W::Npm, task).is_err(),
+                "should reject task {:?}",
+                task
+            );
+        }
+    }
+
+    #[test]
+    fn shell_metacharacters_in_the_package_name_are_rejected() {
+        for pkg in ["api; rm -rf /", "$(whoami)", "../../etc/passwd"] {
+            assert!(
+                package_task_command(&W::Pnpm, "build", pkg).is_err(),
+                "should reject package {:?}",
+                pkg
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -712,10 +1032,13 @@ mod tests {
         let postinstall = scripts.iter().find(|s| s.name == "postinstall").unwrap();
         assert!(postinstall.is_lifecycle);
         assert_eq!(postinstall.risk_level, "high");
+        assert!(postinstall.threat_categories.contains(&"Network Access".to_string()));
+        assert!(postinstall.risk_explanation.as_deref().unwrap_or("").contains("curl"));
 
         let test_script = scripts.iter().find(|s| s.name == "test").unwrap();
         assert!(!test_script.is_lifecycle);
         assert_eq!(test_script.risk_level, "low");
+        assert!(test_script.threat_categories.is_empty());
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -780,9 +1103,6 @@ mod tests {
         assert_eq!(project.name, "integration-test-project");
         assert_eq!(app_state.persistent.lock_safe().projects.len(), 1);
         assert_eq!(app_state.persistent.lock_safe().projects[0].id, project.id);
-
-        // Ensure cache was populated
-        assert!(app_state.scan_cache.lock_safe().contains_key(&path_str));
 
         // Test 2: Remove Project
         remove_project_impl(project.id.clone(), &app_state).unwrap();

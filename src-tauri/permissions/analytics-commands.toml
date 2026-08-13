@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-analytics-commands"
+description = "Allows reading and recording local analytics metrics"
+commands.allow = [
+    "get_analytics_summary",
+    "record_task_execution",
+]

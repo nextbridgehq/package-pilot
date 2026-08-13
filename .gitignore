@@ -171,13 +171,7 @@ ehthumbs.db
 Thumbs.db
 
 
-# folders
-.claude/
+# Agent artifacts
+.agents/
 src-tauri/.cargo/
-
-
-
-
-
-
 

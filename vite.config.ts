@@ -7,7 +7,7 @@ export default defineConfig(async () => ({
   plugins: [react()],
   clearScreen: false,
   server: {
-    port: 1420,
+    port: 1422,
     strictPort: true,
     watch: {
       ignored: ["**/src-tauri/**"],
@@ -17,5 +17,9 @@ export default defineConfig(async () => ({
     globals: true,
     environment: "jsdom",
     setupFiles: ["./src/setupTests.ts"],
+    pool: "forks",
+    forks: {
+      singleFork: true,
+    },
   },
 }));

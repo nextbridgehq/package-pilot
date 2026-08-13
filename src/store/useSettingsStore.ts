@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { AppConfig } from "../types/config";
-import { configApi } from "../services/tauriApi";
+import { commands } from "../bindings";
 
 interface SettingsStore {
   theme: "light" | "dark" | "system";
@@ -21,16 +21,16 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
 
   fetchConfig: async () => {
     set({ loading: true });
-    try {
-      const config = await configApi.getConfig();
-      set({ config, loading: false, theme: config.appearance.theme as any });
-    } catch {
+    const result = await commands.getConfig();
+    if (result.status === "ok" && result.data) {
+      set({ config: result.data, loading: false, theme: result.data.appearance?.theme as any });
+    } else {
       set({ loading: false });
     }
   },
 
   saveConfig: async (config: AppConfig) => {
-    await configApi.saveConfig(config);
+    await commands.saveConfig(config);
     set({ config });
   },
 }));

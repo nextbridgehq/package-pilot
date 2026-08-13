@@ -27,6 +27,11 @@ We will acknowledge receipt of your vulnerability report as soon as possible and
 ## Sandboxing Notice
 Package Pilot provides a local testing sandbox for Node.js packages (npm, pnpm, and yarn). While it restricts certain filesystem and network features, it relies on local execution. Do not run completely untrusted or heavily obfuscated malware using Package Pilot on your host machine without a VM or containerized environment if maximum isolation is required.
 
+## Known Limitations
+
+- **Interactive Shell Access (PTY)**: While Package Pilot validates that the initial directory for terminal sessions is a registered project or sandbox, the interactive shell itself is not strictly confined. Users can use `cd` or other shell commands to navigate anywhere on the filesystem that their OS user has access to.
+- **Local Registry Port**: The built-in Verdaccio registry MUST run on port `4873` in order for the frontend application to connect to it, due to static Content Security Policy (CSP) configurations required by the Tauri framework.
+
 ---
 
 [← Back to README](README.md)

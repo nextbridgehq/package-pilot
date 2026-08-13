@@ -23,6 +23,18 @@ pub async fn detect_package_manager(path: String) -> Result<PackageManagerInfo, 
             version,
             lock_file: Some("pnpm-lock.yaml".to_string()),
         })
+    } else if project_path.join("bun.lockb").exists() || project_path.join("bun.lock").exists() {
+        let lock = if project_path.join("bun.lockb").exists() {
+            "bun.lockb"
+        } else {
+            "bun.lock"
+        };
+        let version = get_version("bun").await;
+        Ok(PackageManagerInfo {
+            detected: PackageManager::Bun,
+            version,
+            lock_file: Some(lock.to_string()),
+        })
     } else if project_path.join("yarn.lock").exists() {
         let version = get_version("yarn").await;
         Ok(PackageManagerInfo {
@@ -46,7 +58,7 @@ pub async fn detect_package_manager(path: String) -> Result<PackageManagerInfo, 
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 
 pub fn get_package_info(path: String) -> Result<String, AppError> {
@@ -72,9 +84,25 @@ async fn get_version(cmd: &str) -> Option<String> {
 #[specta::specta]
 
 pub async fn npm_pack_dry_run(path: String) -> Result<String, AppError> {
+    let pm = crate::services::project::resolve_package_manager(std::path::Path::new(&path), None);
+    let engine = crate::services::project::get_engine(pm);
+    let cmd = match engine.pack_cmd() {
+        crate::models::project::OperationSupport::Native(c) => c,
+        crate::models::project::OperationSupport::Fallback { run, note } => {
+            log::warn!("Pack fallback for {}: {}", path, note);
+            run
+        }
+        crate::models::project::OperationSupport::Unsupported => {
+            return Err(AppError::Generic(format!("Pack operation unsupported for {:?}", pm)));
+        }
+    };
+
+    let mut args = cmd.args;
+    args.push("--dry-run".to_string());
+
     let res = crate::services::shell::run_command(
-        "npm",
-        &["pack", "--dry-run"],
+        &cmd.program,
+        &args.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
         &path,
         std::time::Duration::from_secs(60),
     )
@@ -82,3 +110,68 @@ pub async fn npm_pack_dry_run(path: String) -> Result<String, AppError> {
 
     res.map_err(|e| AppError::Generic(e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    struct TestTempDir {
+        path: PathBuf,
+    }
+
+    impl TestTempDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("packagepilot_cmd_test_{}_{}", name, uuid::Uuid::new_v4()));
+            let _ = fs::create_dir_all(&path);
+            TestTempDir { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_package_manager_bun_lockb() {
+        let temp = TestTempDir::new("bun_lockb");
+        fs::write(temp.path().join("bun.lockb"), "").unwrap();
+        let info = detect_package_manager(temp.path().to_string_lossy().to_string()).await.unwrap();
+        assert_eq!(info.detected, PackageManager::Bun);
+        assert_eq!(info.lock_file.unwrap(), "bun.lockb");
+    }
+
+    #[tokio::test]
+    async fn test_detect_package_manager_bun_lock() {
+        let temp = TestTempDir::new("bun_lock");
+        fs::write(temp.path().join("bun.lock"), "").unwrap();
+        let info = detect_package_manager(temp.path().to_string_lossy().to_string()).await.unwrap();
+        assert_eq!(info.detected, PackageManager::Bun);
+        assert_eq!(info.lock_file.unwrap(), "bun.lock");
+    }
+
+    #[tokio::test]
+    async fn test_detect_package_manager_pnpm() {
+        let temp = TestTempDir::new("pnpm");
+        fs::write(temp.path().join("pnpm-lock.yaml"), "").unwrap();
+        let info = detect_package_manager(temp.path().to_string_lossy().to_string()).await.unwrap();
+        assert_eq!(info.detected, PackageManager::Pnpm);
+        assert_eq!(info.lock_file.unwrap(), "pnpm-lock.yaml");
+    }
+
+    #[tokio::test]
+    async fn test_detect_package_manager_none() {
+        let temp = TestTempDir::new("none");
+        let info = detect_package_manager(temp.path().to_string_lossy().to_string()).await.unwrap();
+        assert_eq!(info.detected, PackageManager::Unknown);
+        assert!(info.lock_file.is_none());
+    }
+}
+

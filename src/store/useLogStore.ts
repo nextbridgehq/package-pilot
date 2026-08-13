@@ -1,11 +1,12 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import { LogEntry } from "../types/log";
-import { logApi } from "../services/tauriApi";
+import { commands } from "../bindings";
 
 interface LogStore {
   logs: LogEntry[];
   loading: boolean;
+  lastFetchTime: number;
   fetchLogs: () => Promise<void>;
   addLog: (log: Omit<LogEntry, "id" | "timestamp">) => void;
   clearLogs: () => Promise<void>;
@@ -15,14 +16,17 @@ interface LogStore {
 export const useLogStore = create<LogStore>((set, get) => ({
   logs: [],
   loading: false,
+  lastFetchTime: 0,
 
   fetchLogs: async () => {
+    const { lastFetchTime, loading } = get();
+    if (loading || Date.now() - lastFetchTime < 1000) return;
     set({ loading: true });
     try {
-      const logs = await logApi.getLogs();
+      const logs = await commands.getLogs();
       // Backend stores oldest-first (append-only Vec); the UI (and addLog's
       // prepend below) is newest-first, so reverse on the way in.
-      set({ logs: [...logs].reverse(), loading: false });
+      set({ logs: [...logs].reverse(), loading: false, lastFetchTime: Date.now() });
     } catch (error) {
       console.error("fetchLogs error:", error);
       set({ loading: false });
@@ -42,7 +46,7 @@ export const useLogStore = create<LogStore>((set, get) => ({
 
   clearLogs: async () => {
     try {
-      await logApi.clearLogs();
+      await commands.clearLogs();
       set({ logs: [] });
     } catch (error) {
       console.error("clearLogs error:", error);

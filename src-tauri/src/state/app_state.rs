@@ -42,18 +42,11 @@ impl Default for PersistentState {
 pub struct AppState {
     pub persistent: Mutex<PersistentState>,
     pub watchers: Mutex<HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    pub registry_running: Mutex<bool>,
     pub data_dir: Mutex<Option<PathBuf>>,
     pub dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub scan_cache: Mutex<
-        HashMap<
-            String,
-            (
-                std::time::SystemTime,
-                Vec<crate::models::project::PackageInfo>,
-            ),
-        >,
-    >,
     pub app_handle: Mutex<Option<AppHandle>>,
+    pub analytics_store: Mutex<crate::models::analytics::AnalyticsStore>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -80,10 +73,11 @@ impl AppState {
         Self {
             persistent: Mutex::new(PersistentState::default()),
             watchers: Mutex::new(HashMap::new()),
+            registry_running: Mutex::new(false),
             data_dir: Mutex::new(None),
             dirty: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            scan_cache: Mutex::new(HashMap::new()),
             app_handle: Mutex::new(None),
+            analytics_store: Mutex::new(crate::models::analytics::AnalyticsStore::default()),
         }
     }
 
@@ -114,10 +108,12 @@ impl AppState {
     }
 
     pub fn force_save(&self) {
-        let dir_guard = self.data_dir.lock_safe();
-        if let Some(dir) = &*dir_guard {
+        let dir = {
+            self.data_dir.lock_safe().clone()
+        };
+        if let Some(dir) = dir {
             if !dir.exists() {
-                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::create_dir_all(&dir);
             }
 
             let data = self.persistent.lock_safe().clone();
@@ -183,9 +179,12 @@ impl Default for AppState {
 }
 
 pub struct PtySession {
-    pub master: Box<dyn MasterPty + Send>,
+    /// `Option` so teardown can close these before joining the reader thread.
+    /// The reader parks in a blocking read on the master and only unblocks once
+    /// every handle to it is gone.
+    pub master: Option<Box<dyn MasterPty + Send>>,
     pub child: Box<dyn Child + Send + Sync>,
-    pub writer: Box<dyn std::io::Write + Send>,
+    pub writer: Option<Box<dyn std::io::Write + Send>>,
     pub directory: String,
     pub history: std::sync::Arc<std::sync::Mutex<String>>,
     pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -195,11 +194,20 @@ pub struct PtySession {
 impl Drop for PtySession {
     fn drop(&mut self) {
         self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        // Best-effort graceful shutdown: on Unix, `Child::kill()` from the
-        // `portable_pty::Child` trait sends SIGKILL directly (there's no
-        // portable SIGTERM-first hook through this trait), so this remains
-        // a hard kill — documented here rather than left implicit.
-        let _ = self.child.kill();
+        // Use kill_process_tree to ensure grandchild processes (like `npm run build` scripts)
+        // are properly terminated rather than orphaned as zombies.
+        if let Some(pid) = self.child.process_id() {
+            let _ = crate::utils::process::kill_process_tree(pid);
+        } else {
+            let _ = self.child.kill();
+        }
+
+        // Close every handle to the PTY before joining. The reader thread is
+        // blocked inside `read()` on the master and will not observe `cancel`
+        // until that read returns - which it only does once the master is
+        // closed. Joining first can hang forever.
+        drop(self.writer.take());
+        drop(self.master.take());
 
         if let Some(thread) = self.reader_thread.take() {
             let _ = thread.join();
@@ -225,6 +233,23 @@ impl Default for PtyState {
     }
 }
 
+pub struct RegistryState {
+    pub process_id: Mutex<Option<u32>>,
+}
+
+impl RegistryState {
+    pub fn new() -> Self {
+        Self {
+            process_id: Mutex::new(None),
+        }
+    }
+}
+
+impl Default for RegistryState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

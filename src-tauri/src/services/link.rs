@@ -70,49 +70,77 @@ pub async fn link_via_pack_internal(request: &LinkRequest) -> Result<LinkEntry, 
         run_build_if_exists(&request.source_path).await?;
     }
 
-    // SECURITY: --ignore-scripts unless the user explicitly opted in via config.
-    // `npm pack` runs the SOURCE package's own prepack/postpack/prepare
-    // scripts before the tarball is even produced, so this call must be
-    // gated too -- not just the subsequent install.
-    let mut pack_args = vec!["pack", "--pack-destination", request.target_path.as_str()];
-    if !request.allow_lifecycle_scripts {
-        pack_args.push("--ignore-scripts");
-    }
+    let source_pm = crate::services::project::resolve_package_manager(Path::new(&request.source_path), None);
+    let temp_name = format!("{}.tgz", uuid::Uuid::new_v4());
+    let temp_tarball = Path::new(&request.target_path).join(&temp_name);
+    let temp_tarball_str = temp_tarball.to_string_lossy().to_string();
+
+    let mut pack_args = vec!["pack"];
+    let program = match source_pm {
+        crate::models::project::PackageManager::Pnpm => {
+            pack_args.push("--pack-destination");
+            pack_args.push(request.target_path.as_str());
+            if !request.allow_lifecycle_scripts {
+                pack_args.push("--config.ignore-scripts=true");
+            }
+            "pnpm"
+        },
+        crate::models::project::PackageManager::Yarn => {
+            pack_args.push("--filename");
+            pack_args.push(&temp_tarball_str);
+            if !request.allow_lifecycle_scripts {
+                pack_args.push("--ignore-scripts");
+            }
+            "yarn"
+        },
+        _ => {
+            pack_args.push("--pack-destination");
+            pack_args.push(request.target_path.as_str());
+            if !request.allow_lifecycle_scripts {
+                pack_args.push("--ignore-scripts");
+            }
+            "npm"
+        }
+    };
+
     let stdout = run_command(
-        "npm",
+        program,
         &pack_args,
         &request.source_path,
         Duration::from_secs(300),
     )
     .await?;
 
-    // npm pack prints the tarball name on the last line.
-    // If lifecycle scripts are run, they will print before the tarball name.
-    let tarball_name = stdout
-        .lines()
-        .rfind(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let tarball_path = Path::new(&request.target_path).join(&tarball_name);
-    let tarball_path_str = tarball_path.to_string_lossy().to_string();
+    let tarball_path_str = if program == "yarn" {
+        temp_tarball_str
+    } else {
+        let tarball_name = stdout
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        Path::new(&request.target_path).join(&tarball_name).to_string_lossy().to_string()
+    };
 
-    let mut install_args: Vec<&str> = vec![
-        "install",
-        &tarball_path_str,
-        "--no-save",
-        "--legacy-peer-deps",
-    ];
-    if !request.allow_lifecycle_scripts {
-        install_args.push("--ignore-scripts");
+    let pm = crate::services::project::resolve_package_manager(Path::new(&request.target_path), None);
+    let engine = crate::services::project::get_engine(pm);
+    let install_opts = crate::models::project::InstallOptions {
+        target_tarball: Some(tarball_path_str.clone()),
+        ignore_scripts: !request.allow_lifecycle_scripts,
+        no_save: true,
+    };
+    let cmd = engine.install_cmd(&install_opts);
+    let args_str: Vec<&str> = cmd.args.iter().map(|s| s.as_str()).collect();
+
+    if let Err(err) = run_command(&cmd.program, &args_str, &request.target_path, Duration::from_secs(300)).await {
+        let err_msg = err.to_string();
+        let findings = crate::utils::pm_classifier::classify_execution_failure(pm, &err_msg, "");
+        if let Some(conflict) = findings.iter().find(|f| f.kind == crate::utils::pm_classifier::FindingKind::PeerDependencyConflict) {
+            return Err(AppError::Generic(format!("Install Fidelity Failure [Peer Dep Conflict]: {}", conflict.details)));
+        }
+        return Err(err);
     }
-    run_command(
-        "npm",
-        &install_args,
-        &request.target_path,
-        Duration::from_secs(300),
-    )
-    .await?;
 
     Ok(LinkEntry {
         id: uuid::Uuid::new_v4().to_string(),
@@ -130,6 +158,12 @@ pub async fn link_via_pack_internal(request: &LinkRequest) -> Result<LinkEntry, 
 }
 
 pub async fn link_via_yalc_internal(request: &LinkRequest) -> Result<LinkEntry, AppError> {
+    if !request.allow_lifecycle_scripts {
+        return Err(crate::error::AppError::Generic(
+            "Yalc does not support disabling lifecycle scripts. To proceed safely, please use the NpmPack method, or enable lifecycle scripts if you trust this package.".to_string()
+        ));
+    }
+
     let package_name = get_package_name(&request.source_path).unwrap_or_default();
     crate::utils::validation::sanitize_package_name(&package_name)?;
 
@@ -204,8 +238,63 @@ pub async fn link_via_workspace_internal(request: &LinkRequest) -> Result<LinkEn
     std::fs::write(&target_pkg_json_path, updated_content)
         .map_err(|e| AppError::Generic(format!("Failed to write package.json: {}", e)))?;
 
+    let pm = crate::services::project::resolve_package_manager(Path::new(&request.target_path), None);
+    let engine = crate::services::project::get_engine(pm);
+    let install_opts = crate::models::project::InstallOptions {
+        target_tarball: None,
+        ignore_scripts: !request.allow_lifecycle_scripts,
+        no_save: false,
+    };
+    let cmd = engine.install_cmd(&install_opts);
+    let args_str: Vec<&str> = cmd.args.iter().map(|s| s.as_str()).collect();
+
+    if let Err(err) = run_command(&cmd.program, &args_str, &request.target_path, Duration::from_secs(300)).await {
+        let err_msg = err.to_string();
+        let findings = crate::utils::pm_classifier::classify_execution_failure(pm, &err_msg, "");
+        if let Some(conflict) = findings.iter().find(|f| f.kind == crate::utils::pm_classifier::FindingKind::PeerDependencyConflict) {
+            return Err(AppError::Generic(format!("Workspace Fidelity Failure [Peer Dep Conflict]: {}", conflict.details)));
+        }
+        return Err(err);
+    }
+
+    Ok(LinkEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        source_package: package_name,
+        source_path: request.source_path.clone(),
+        target_project: get_package_name(&request.target_path).unwrap_or_default(),
+        target_path: request.target_path.clone(),
+        method: LinkMethod::Workspace,
+        status: LinkStatus::Active,
+        watch_enabled: request.watch,
+        created_at: chrono::Utc::now(),
+        last_synced: Some(chrono::Utc::now()),
+        has_cli: false,
+    })
+}
+
+pub async fn link_via_registry_internal(request: &LinkRequest) -> Result<LinkEntry, AppError> {
+    let package_name = get_package_name(&request.source_path).unwrap_or_default();
+    crate::utils::validation::sanitize_package_name(&package_name)?;
+
     // SECURITY: --ignore-scripts unless the user explicitly opted in via config.
-    let mut install_args = vec!["install", "--legacy-peer-deps"];
+    let mut publish_args = vec!["publish", "--registry", "http://localhost:4873"];
+    if !request.allow_lifecycle_scripts {
+        publish_args.push("--ignore-scripts");
+    }
+    run_command(
+        "npm",
+        &publish_args,
+        &request.source_path,
+        Duration::from_secs(300),
+    )
+    .await?;
+
+    let mut install_args = vec![
+        "install",
+        package_name.as_str(),
+        "--registry",
+        "http://localhost:4873",
+    ];
     if !request.allow_lifecycle_scripts {
         install_args.push("--ignore-scripts");
     }
@@ -223,7 +312,7 @@ pub async fn link_via_workspace_internal(request: &LinkRequest) -> Result<LinkEn
         source_path: request.source_path.clone(),
         target_project: get_package_name(&request.target_path).unwrap_or_default(),
         target_path: request.target_path.clone(),
-        method: LinkMethod::Workspace,
+        method: LinkMethod::LocalRegistry,
         status: LinkStatus::Active,
         watch_enabled: request.watch,
         created_at: chrono::Utc::now(),
@@ -541,5 +630,20 @@ mod tests {
 
         fs::remove_dir_all(&source).unwrap();
         fs::remove_dir_all(&target).unwrap();
+    }
+
+    #[test]
+    fn test_link_via_pack_no_legacy_peer_deps_injection() {
+        use crate::services::project::get_engine;
+        use crate::models::project::{InstallOptions, PackageManager};
+
+        let engine = get_engine(PackageManager::Npm);
+        let opts = InstallOptions {
+            target_tarball: Some("/tmp/package-1.0.0.tgz".to_string()),
+            ignore_scripts: true,
+            no_save: true,
+        };
+        let cmd = engine.install_cmd(&opts);
+        assert!(!cmd.args.contains(&"--legacy-peer-deps".to_string()));
     }
 }

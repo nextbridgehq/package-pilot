@@ -13,7 +13,12 @@ export const commands = {
 	checkPackageCli: (path: string) => __TAURI_INVOKE<boolean>("check_package_cli", { path }),
 	createSandbox: (packagePath: string | null) => typedError<string, AppError>(__TAURI_INVOKE("create_sandbox", { packagePath })),
 	runSandboxScript: (targetPath: string) => typedError<string, AppError>(__TAURI_INVOKE("run_sandbox_script", { targetPath })),
+	runWorkspaceTask: (projectId: string, task: string) => typedError<string, AppError>(__TAURI_INVOKE("run_workspace_task", { projectId, task })),
+	runPackageTask: (projectId: string, packageName: string, task: string) => typedError<string, AppError>(__TAURI_INVOKE("run_package_task", { projectId, packageName, task })),
 	getPackageScripts: (path: string) => typedError<ScriptInfo[], AppError>(__TAURI_INVOKE("get_package_scripts", { path })),
+	runSecurityAudit: (projectId: string) => typedError<string, string>(__TAURI_INVOKE("run_security_audit", { projectId })),
+	getDirectorySize: (path: string) => typedError<number | null, string>(__TAURI_INVOKE("get_directory_size", { path })),
+	getDirectorySizes: (paths: string[]) => typedError<{ [key in string]: number | null }, string>(__TAURI_INVOKE("get_directory_sizes", { paths })),
 	detectPackageManager: (path: string) => typedError<PackageManagerInfo, AppError>(__TAURI_INVOKE("detect_package_manager", { path })),
 	getPackageInfo: (path: string) => typedError<string, AppError>(__TAURI_INVOKE("get_package_info", { path })),
 	npmPackDryRun: (path: string) => typedError<string, AppError>(__TAURI_INVOKE("npm_pack_dry_run", { path })),
@@ -31,6 +36,11 @@ export const commands = {
 	getWatcherStatus: () => typedError<{ [key in string]: boolean }, string>(__TAURI_INVOKE("get_watcher_status")),
 	runBuild: (path: string, script: string | null) => typedError<string, AppError>(__TAURI_INVOKE("run_build", { path, script })),
 	runInstall: (path: string) => typedError<string, AppError>(__TAURI_INVOKE("run_install", { path })),
+	startRegistry: (port: number | null) => typedError<string, string>(__TAURI_INVOKE("start_registry", { port })),
+	stopRegistry: () => typedError<null, string>(__TAURI_INVOKE("stop_registry")),
+	publishToRegistry: (packagePath: string, registryUrl: string | null, dryRun: boolean | null) => typedError<string, string>(__TAURI_INVOKE("publish_to_registry", { packagePath, registryUrl, dryRun })),
+	listRegistryPackages: (registryUrl: string | null) => typedError<string[], string>(__TAURI_INVOKE("list_registry_packages", { registryUrl })),
+	getRegistryStatus: () => typedError<RegistryStatus, string>(__TAURI_INVOKE("get_registry_status")),
 	runDiagnostics: () => typedError<DiagnosticResult[], string>(__TAURI_INVOKE("run_diagnostics")),
 	checkSymlinkPermissions: () => typedError<DiagnosticResult, string>(__TAURI_INVOKE("check_symlink_permissions")),
 	checkNodeInstallation: () => typedError<DiagnosticResult, string>(__TAURI_INVOKE("check_node_installation")),
@@ -42,19 +52,28 @@ export const commands = {
 	openFolderDialog: () => typedError<string | null, string>(__TAURI_INVOKE("open_folder_dialog")),
 	openTerminal: (path: string) => typedError<null, string>(__TAURI_INVOKE("open_terminal", { path })),
 	openInExplorer: (path: string) => typedError<null, string>(__TAURI_INVOKE("open_in_explorer", { path })),
+	openUrl: (url: string) => typedError<null, string>(__TAURI_INVOKE("open_url", { url })),
 	getSystemInfo: () => typedError<SystemInfo, string>(__TAURI_INVOKE("get_system_info")),
 	getFilteredEnvVars: () => __TAURI_INVOKE<string[]>("get_filtered_env_vars"),
 	quitApp: () => __TAURI_INVOKE<void>("quit_app"),
-	spawnPty: (sessionId: string, directory: string) => typedError<null, string>(__TAURI_INVOKE("spawn_pty", { sessionId, directory })),
+	spawnPty: (sessionId: string, directory: string, cols: number, rows: number) => typedError<null, string>(__TAURI_INVOKE("spawn_pty", { sessionId, directory, cols, rows })),
 	writePty: (sessionId: string, data: string) => typedError<null, string>(__TAURI_INVOKE("write_pty", { sessionId, data })),
 	resizePty: (sessionId: string, rows: number, cols: number) => typedError<null, string>(__TAURI_INVOKE("resize_pty", { sessionId, rows, cols })),
 	killPty: (sessionId: string) => typedError<null, string>(__TAURI_INVOKE("kill_pty", { sessionId })),
 	attachPty: (sessionId: string) => typedError<string | null, string>(__TAURI_INVOKE("attach_pty", { sessionId })),
+	getAnalyticsSummary: () => typedError<AnalyticsSummary, string>(__TAURI_INVOKE("get_analytics_summary")),
+	recordTaskExecution: (scriptName: string, durationMs: number) => typedError<null, string>(__TAURI_INVOKE("record_task_execution", { scriptName, durationMs })),
 };
 
 /* Types */
+export type AnalyticsSummary = {
+	total_tasks_run: number,
+	total_duration_ms: number,
+};
+
 export type AppConfig = {
 	general: GeneralConfig,
+	registry: RegistryConfig,
 	watcher: WatcherConfig,
 	appearance: AppearanceConfig,
 };
@@ -110,7 +129,7 @@ export type LinkEntry = {
 	has_cli?: boolean,
 };
 
-export type LinkMethod = "Symlink" | "NpmPack" | "Yalc" | "Workspace" | "FileCopy";
+export type LinkMethod = "Symlink" | "NpmPack" | "Yalc" | "Workspace" | "LocalRegistry" | "FileCopy";
 
 export type LinkRequest = {
 	source_path: string,
@@ -145,7 +164,7 @@ export type PackageInfo = {
 	has_cli?: boolean,
 };
 
-export type PackageManager = "Npm" | "Yarn" | "Pnpm" | "Unknown";
+export type PackageManager = "Npm" | "Yarn" | "Pnpm" | "Bun" | "Unknown";
 
 export type PackageManagerInfo = {
 	detected: PackageManager,
@@ -161,8 +180,20 @@ export type Project = {
 	packages: PackageInfo[],
 	ignored_packages?: string[],
 	only_cli?: boolean,
+	workspace_tool?: WorkspaceTool,
 	created_at: string,
 	last_accessed: string,
+};
+
+export type RegistryConfig = {
+	port: number,
+	storage_path: string,
+	auto_start: boolean,
+};
+
+export type RegistryStatus = {
+	running: boolean,
+	pid: number | null,
 };
 
 export type ScriptInfo = {
@@ -170,6 +201,8 @@ export type ScriptInfo = {
 	command: string,
 	is_lifecycle: boolean,
 	risk_level: string,
+	threat_categories: string[],
+	risk_explanation: string | null,
 };
 
 export type SystemInfo = {
@@ -186,6 +219,8 @@ export type WatcherConfig = {
 	ignore_patterns: string[],
 	auto_rebuild: boolean,
 };
+
+export type WorkspaceTool = "Turbo" | "Lerna" | "Pnpm" | "Yarn" | "Npm" | "None";
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

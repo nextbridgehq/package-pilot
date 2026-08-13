@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { Project } from "../types/project";
-import { projectApi } from "../services/tauriApi";
+import { commands } from "../bindings";
 import { useLinkStore } from "./useLinkStore";
 import { useWatcherStore } from "./useWatcherStore";
 
@@ -24,7 +24,14 @@ interface ProjectStore {
   setAutoOpenAddDialog: (value: boolean) => void;
 }
 
-const deletionTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const deletionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    deletionTimers.forEach(clearTimeout);
+    deletionTimers.clear();
+  });
+}
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
   projects: [],
@@ -40,40 +47,41 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     if (loading || Date.now() - lastFetchTime < 1000) return;
 
     set({ loading: true, error: null });
-    try {
-      const projects = await projectApi.listProjects();
-      set({ projects: Array.isArray(projects) ? projects : [], loading: false, lastFetchTime: Date.now() });
-    } catch (error) {
-      set({ error: String(error), loading: false });
-      console.error("fetchProjects error:", error);
+    const result = await commands.listProjects();
+    if (result.status === "ok") {
+      set({ projects: Array.isArray(result.data) ? result.data : [], loading: false, lastFetchTime: Date.now() });
+    } else {
+      set({ error: String(result.error), loading: false });
+      console.error("fetchProjects error:", result.error);
     }
   },
 
   refreshProject: async (projectId: string, onlyCli: boolean) => {
     set({ loading: true, error: null });
-    try {
-      const updatedProject = await projectApi.refreshProject(projectId, onlyCli);
+    const result = await commands.refreshProject(projectId, onlyCli);
+    if (result.status === "ok") {
+      const updatedProject = result.data;
       set((state) => ({
         projects: state.projects.map((p) => p.id === projectId ? updatedProject : p),
         selectedProject: state.selectedProject?.id === projectId ? updatedProject : state.selectedProject,
         loading: false,
       }));
-    } catch (error) {
-      set({ error: String(error), loading: false });
-      console.error("refreshProject error:", error);
+    } else {
+      set({ error: String(result.error), loading: false });
+      console.error("refreshProject error:", result.error);
     }
   },
 
   addProject: async (path: string, onlyCli: boolean = false) => {
     set({ loading: true, error: null });
-    try {
-      const project = await projectApi.addProject(path, onlyCli);
+    const result = await commands.addProject(path, onlyCli);
+    if (result.status === "ok") {
       set((state) => ({
-        projects: [...state.projects, project],
+        projects: [...state.projects, result.data],
         loading: false,
       }));
-    } catch (error) {
-      set({ error: String(error), loading: false });
+    } else {
+      set({ error: String(result.error), loading: false });
     }
   },
 
@@ -83,16 +91,17 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       pendingDeletions.add(id);
       return { pendingDeletions };
     });
-    deletionTimers[id] = setTimeout(() => {
+    deletionTimers.set(id, setTimeout(() => {
       get().removeProject(id);
-      delete deletionTimers[id];
-    }, 5000);
+      deletionTimers.delete(id);
+    }, 5000));
   },
 
   undoDeletion: (id: string) => {
-    if (deletionTimers[id]) {
-      clearTimeout(deletionTimers[id]);
-      delete deletionTimers[id];
+    const timer = deletionTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      deletionTimers.delete(id);
     }
     set((state) => {
       const pendingDeletions = new Set(state.pendingDeletions);
@@ -102,8 +111,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   },
 
   removeProject: async (id: string) => {
-    try {
-      await projectApi.removeProject(id);
+    const result = await commands.removeProject(id);
+    if (result.status === "ok") {
       set((state) => {
         const pendingDeletions = new Set(state.pendingDeletions);
         pendingDeletions.delete(id);
@@ -120,18 +129,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       // immediately instead of showing stale entries until next navigation.
       useLinkStore.getState().fetchLinks();
       useWatcherStore.getState().fetchStatus();
-    } catch (error) {
+    } else {
       set((state) => {
         const pendingDeletions = new Set(state.pendingDeletions);
         pendingDeletions.delete(id);
-        return { error: String(error), pendingDeletions };
+        return { error: String(result.error), pendingDeletions };
       });
     }
   },
 
   removePackage: async (projectId: string, packageName: string) => {
-    try {
-      await projectApi.removePackage(projectId, packageName);
+    const result = await commands.removePackage(projectId, packageName);
+    if (result.status === "ok") {
       set((state) => ({
         projects: state.projects.map((p) => {
           if (p.id === projectId) {
@@ -149,8 +158,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       // immediately instead of showing stale entries until next navigation.
       useLinkStore.getState().fetchLinks();
       useWatcherStore.getState().fetchStatus();
-    } catch (error) {
-      set({ error: String(error) });
+    } else {
+      set({ error: String(result.error) });
     }
   },
 

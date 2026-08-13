@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { LinkEntry, LinkMethod, LinkRequest } from "../types/link";
-import { linkApi } from "../services/tauriApi";
+import { commands } from "../bindings";
 
 // The Create Link form's in-progress input. AppLayout's page switch fully
 // unmounts/remounts each page's component tree on navigation (see
@@ -48,7 +48,14 @@ interface LinkStore {
   applyConfigDefaultsOnce: (buildFirst: boolean, installPeerDeps: boolean) => void;
 }
 
-const deletionTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const deletionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    deletionTimers.forEach(clearTimeout);
+    deletionTimers.clear();
+  });
+}
 
 export const useLinkStore = create<LinkStore>((set, get) => ({
   activeLinks: [],
@@ -61,24 +68,24 @@ export const useLinkStore = create<LinkStore>((set, get) => ({
 
   fetchLinks: async () => {
     set({ loading: true, error: null });
-    try {
-      const links = await linkApi.listActiveLinks();
-      set({ activeLinks: Array.isArray(links) ? links : [], loading: false });
-    } catch (error) {
-      set({ error: String(error), loading: false });
+    const result = await commands.listActiveLinks();
+    if (result.status === "ok") {
+      set({ activeLinks: Array.isArray(result.data) ? result.data : [], loading: false });
+    } else {
+      set({ error: String(result.error), loading: false });
     }
   },
 
   createLink: async (request: LinkRequest) => {
     set({ loading: true, error: null });
-    try {
-      const link = await linkApi.createLink(request);
+    const result = await commands.createLink(request);
+    if (result.status === "ok") {
       set((state) => ({
-        activeLinks: [...state.activeLinks, link],
+        activeLinks: [...state.activeLinks, result.data],
         loading: false,
       }));
-    } catch (error) {
-      set({ error: String(error), loading: false });
+    } else {
+      set({ error: String(result.error), loading: false });
     }
   },
 
@@ -88,16 +95,17 @@ export const useLinkStore = create<LinkStore>((set, get) => ({
       pendingDeletions.add(id);
       return { pendingDeletions };
     });
-    deletionTimers[id] = setTimeout(() => {
+    deletionTimers.set(id, setTimeout(() => {
       get().removeLink(id);
-      delete deletionTimers[id];
-    }, 5000);
+      deletionTimers.delete(id);
+    }, 5000));
   },
 
   undoDeletion: (id: string) => {
-    if (deletionTimers[id]) {
-      clearTimeout(deletionTimers[id]);
-      delete deletionTimers[id];
+    const timer = deletionTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      deletionTimers.delete(id);
     }
     set((state) => {
       const pendingDeletions = new Set(state.pendingDeletions);
@@ -107,8 +115,8 @@ export const useLinkStore = create<LinkStore>((set, get) => ({
   },
 
   removeLink: async (id: string) => {
-    try {
-      await linkApi.removeLink(id);
+    const result = await commands.removeLink(id);
+    if (result.status === "ok") {
       set((state) => {
         const pendingDeletions = new Set(state.pendingDeletions);
         pendingDeletions.delete(id);
@@ -118,11 +126,11 @@ export const useLinkStore = create<LinkStore>((set, get) => ({
           error: null,
         };
       });
-    } catch (error) {
+    } else {
       set((state) => {
         const pendingDeletions = new Set(state.pendingDeletions);
         pendingDeletions.delete(id);
-        return { error: String(error), pendingDeletions };
+        return { error: String(result.error), pendingDeletions };
       });
     }
   },

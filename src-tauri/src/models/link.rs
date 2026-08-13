@@ -23,6 +23,7 @@ pub enum LinkMethod {
     NpmPack,
     Yalc,
     Workspace,
+    LocalRegistry,
     FileCopy,
 }
 

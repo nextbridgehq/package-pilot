@@ -5,4 +5,5 @@ commands.allow = [
     "run_diagnostics",
     "check_symlink_permissions",
     "check_node_installation",
+    "export_diagnostics",
 ]

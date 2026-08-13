@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default, specta::Type)]
 pub struct AppConfig {
     pub general: GeneralConfig,
+    pub registry: RegistryConfig,
     pub watcher: WatcherConfig,
     pub appearance: AppearanceConfig,
 }
@@ -28,6 +29,23 @@ impl Default for GeneralConfig {
             auto_install_deps: true,
             projects_directory: None,
             allow_lifecycle_scripts: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct RegistryConfig {
+    pub port: u16,
+    pub storage_path: String,
+    pub auto_start: bool,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            port: 4873,
+            storage_path: "./local-registry".to_string(),
+            auto_start: false,
         }
     }
 }

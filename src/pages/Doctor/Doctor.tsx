@@ -12,7 +12,7 @@ import {
 import {
   StethoscopeRegular,
 } from "@fluentui/react-icons";
-import { doctorApi } from "../../services/tauriApi";
+import { commands } from "../../bindings";
 import { useDoctorStore } from "../../store/useDoctorStore";
 import { DoctorCheckItem } from "./DoctorCheckItem";
 import { useSharedStyles } from "../../styles/useSharedStyles";
@@ -77,8 +77,12 @@ export const Doctor: React.FC = () => {
   const runDiagnostics = async () => {
     setLoading(true);
     try {
-      const diagnostics = await doctorApi.runDiagnostics();
-      setResults(diagnostics);
+      const res = await commands.runDiagnostics();
+      if (res.status === "ok") {
+        setResults(res.data);
+      } else {
+        console.error("Diagnostics failed:", res.error);
+      }
     } catch (error) {
       console.error("Diagnostics failed:", error);
     } finally {

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { motion, Variants } from "framer-motion";
 import {
   makeStyles,
   tokens,
@@ -20,12 +21,14 @@ import {
   Toast,
   ToastTitle,
   ToastTrigger,
+  Spinner,
 } from "@fluentui/react-components";
 import {
   AddRegular,
   DeleteRegular,
   FolderOpenRegular,
 } from "@fluentui/react-icons";
+import { DirectorySize } from "../../components/common/DirectorySize";
 import { useProjectStore } from "../../store/useProjectStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { PackageManager } from "../../types/project";
@@ -34,6 +37,20 @@ import { useSharedStyles } from "../../styles/useSharedStyles";
 import { mergeClasses } from "@fluentui/react-components";
 import { RadioGroup, Radio } from "@fluentui/react-components";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
+import { commands } from "../../bindings";
+
+const containerVariants: Variants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: { staggerChildren: 0.05 }
+  }
+};
+
+const itemVariants: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  show: { opacity: 1, y: 0, transition: { ease: "easeOut", duration: 0.2 } }
+};
 
 const useStyles = makeStyles({
   container: {
@@ -107,13 +124,14 @@ interface ProjectListProps {
 export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
   const styles = useStyles();
   const shared = useSharedStyles();
-  const { projects, pendingDeletions, fetchProjects, addProject, removeProject, markForDeletion, undoDeletion, selectProject, loading, autoOpenAddDialog, setAutoOpenAddDialog } =
+  const { projects, pendingDeletions, fetchProjects, addProject, markForDeletion, undoDeletion, selectProject, loading, autoOpenAddDialog, setAutoOpenAddDialog } =
     useProjectStore();
   const { config } = useSettingsStore();
 
   const [addProjectDialogOpen, setAddProjectDialogOpen] = useState(false);
   const [pendingProjectPath, setPendingProjectPath] = useState<string | null>(null);
   const [addProjectOnlyCli, setAddProjectOnlyCli] = useState(false);
+  const [dirSizes, setDirSizes] = useState<Record<string, number | null>>({});
   const autoOpenHandled = React.useRef(false);
   
   const toasterId = useId("project-toaster");
@@ -124,6 +142,17 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
+
+  useEffect(() => {
+    const paths = displayProjects.map(p => p.path);
+    if (paths.length > 0) {
+      commands.getDirectorySizes(paths).then(res => {
+        if (res.status === "ok") {
+          setDirSizes(prev => ({ ...prev, ...res.data }));
+        }
+      }).catch(err => console.error("Failed to fetch directory sizes:", err));
+    }
+  }, [displayProjects]);
 
   const handleAddProject = async () => {
     try {
@@ -186,8 +215,8 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
             </Text>
           )}
         </div>
-        <Button appearance="primary" icon={<AddRegular />} onClick={handleAddProject}>
-          Add Project
+        <Button appearance="primary" icon={loading ? <Spinner size="tiny" /> : <AddRegular />} onClick={handleAddProject} disabled={loading}>
+          {loading ? "Scanning project..." : "Add Project"}
         </Button>
       </div>
 
@@ -216,26 +245,34 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
           </Text>
           <Button
             appearance="primary"
-            icon={<AddRegular />}
+            icon={loading ? <Spinner size="tiny" /> : <AddRegular />}
             onClick={handleAddProject}
+            disabled={loading}
           >
-            Add Your First Project
+            {loading ? "Scanning project..." : "Add Your First Project"}
           </Button>
         </div>
       ) : (
-        <div className={styles.projectGrid}>
+        <motion.div className={styles.projectGrid} variants={containerVariants} initial="hidden" animate="show">
           {displayProjects.map((project) => (
-            <Card 
-              key={project.id} 
-              className={mergeClasses(shared.card, shared.cardInteractive, styles.projectCard)}
-              onClick={() => {
-                selectProject(project);
-                if (onNavigate) {
-                  onNavigate("packages");
-                }
-              }}
+            <motion.div
+              key={project.id}
+              variants={itemVariants}
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.99 }}
+              style={{ display: "flex", height: "100%" }}
             >
-              <div className={styles.cardHeader}>
+              <Card 
+                className={mergeClasses(shared.card, shared.cardInteractive, styles.projectCard)}
+                onClick={() => {
+                  selectProject(project);
+                  if (onNavigate) {
+                    onNavigate("packages");
+                  }
+                }}
+                style={{ flex: 1 }}
+              >
+                <div className={styles.cardHeader}>
                 <div className={styles.cardHeaderLeft}>
                   <Text 
                     weight="semibold" 
@@ -245,6 +282,9 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
                     {project.name}
                   </Text>
                   <div className={styles.pathText}>{project.path}</div>
+                  <div style={{ marginTop: "4px" }}>
+                    <DirectorySize size={dirSizes[project.path]} />
+                  </div>
                 </div>
                 <Button
                   style={{ flexShrink: 0 }}
@@ -297,9 +337,10 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
                   </Badge>
                 ))}
               </div>
-            </Card>
+              </Card>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       )}
       
       <Dialog open={addProjectDialogOpen} onOpenChange={(_, data) => setAddProjectDialogOpen(data.open)}>
@@ -330,10 +371,31 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
                 setAddProjectDialogOpen(false);
                 setPendingProjectPath(null);
               }}>Cancel</Button>
-              <Button appearance="primary" onClick={async () => {
+              <Button appearance="primary" onClick={() => {
                 if (pendingProjectPath) {
                   setAddProjectDialogOpen(false);
-                  await addProject(pendingProjectPath, addProjectOnlyCli);
+                  dispatchToast(
+                    <Toast>
+                      <ToastTitle>Scanning project for packages…</ToastTitle>
+                    </Toast>,
+                    { intent: 'info' },
+                  );
+                  addProject(pendingProjectPath, addProjectOnlyCli).then(() => {
+                    dispatchToast(
+                      <Toast>
+                        <ToastTitle>Project added</ToastTitle>
+                      </Toast>,
+                      { intent: 'success' },
+                    );
+                  }).catch((err) => {
+                    console.error('Failed to add project:', err);
+                    dispatchToast(
+                      <Toast>
+                        <ToastTitle>Failed to add project</ToastTitle>
+                      </Toast>,
+                      { intent: 'error' },
+                    );
+                  });
                   setPendingProjectPath(null);
                 }
               }}>Add Project</Button>

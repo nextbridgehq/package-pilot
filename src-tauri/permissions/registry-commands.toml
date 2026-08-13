@@ -6,4 +6,5 @@ commands.allow = [
     "stop_registry",
     "publish_to_registry",
     "list_registry_packages",
+    "get_registry_status",
 ]
