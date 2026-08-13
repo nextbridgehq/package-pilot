@@ -1,6 +1,6 @@
 # Package Pilot
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
 [![CI](https://github.com/nextbridgehq/package-pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/nextbridgehq/package-pilot/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
@@ -28,7 +28,11 @@ Package Pilot replaces manual, error-prone terminal commands with a clean GUI fo
   - **File Copy** — Directly copies files to node_modules
 - **Package Selection:** Searchable dropdown grouped by project for quick package selection
 - **Automated Sandboxes:** Instantly create isolated environments for testing CLI packages
-- **Built-in Terminal:** Integrated xterm.js terminal with PTY support and command persistence
+- **Local Registry:** Run a local Verdaccio npm registry to publish and install packages without touching npmjs.org
+- **Security Audit:** Scan lifecycle scripts and dependencies for vulnerabilities, for any project or standalone package
+- **Dependency Topology:** Visualize package dependencies with cyclic-dependency detection and one-click workspace task runs (Turborepo/Lerna)
+- **Analytics Dashboard:** Track project and package metrics over time
+- **Integrated Terminal:** Tabbed, resizable PTY sessions with native shell theming and command persistence
 - **Live Watcher:** Automatically run build scripts when your source code changes
 - **File Change Events:** Real-time file system monitoring with event type detection (Created, Modified, Deleted)
 - **System Doctor:** Diagnose symlink permissions, Node.js installation, and environment setup
@@ -43,6 +47,7 @@ Package Pilot replaces manual, error-prone terminal commands with a clean GUI fo
 - [Node.js](https://nodejs.org/)
 - [Rust](https://www.rust-lang.org/) (for Tauri backend)
 - Optional: [Yalc](https://github.com/wix-incubator/yalc) for Yalc linking method
+- Optional: [Verdaccio](https://verdaccio.org/) (`npm install -g verdaccio`) for the Local Registry feature
 
 ### Installation
 

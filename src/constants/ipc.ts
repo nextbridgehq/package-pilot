@@ -1,5 +1,6 @@
 export const IPC_EVENTS = {
   PTY_OUTPUT: "pty-output",
+  PTY_EXIT: "pty-exit",
   FILE_CHANGED: "file-changed",
   BUILD_STARTED: "build-started",
   BUILD_COMPLETED: "build-completed",
@@ -7,4 +8,5 @@ export const IPC_EVENTS = {
   INSTALL_STARTED: "install-started",
   INSTALL_COMPLETED: "install-completed",
   INSTALL_FAILED: "install-failed",
+  REGISTRY_STATUS_CHANGED: "registry-status-changed",
 };

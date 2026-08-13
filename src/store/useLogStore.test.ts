@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useLogStore } from "./useLogStore";
-import { logApi } from "../services/tauriApi";
+import { commands } from "../bindings";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(),
 }));
 
-vi.mock("../services/tauriApi", () => ({
-  logApi: {
+vi.mock("../bindings", () => ({
+  commands: {
     getLogs: vi.fn(),
     clearLogs: vi.fn(),
   },
@@ -15,12 +15,12 @@ vi.mock("../services/tauriApi", () => ({
 
 describe("useLogStore", () => {
   beforeEach(() => {
-    useLogStore.setState({ logs: [], loading: false });
+    useLogStore.setState({ logs: [], loading: false, lastFetchTime: 0 });
     vi.clearAllMocks();
   });
 
   it("reverses the backend's oldest-first order to newest-first for display", async () => {
-    vi.mocked(logApi.getLogs).mockResolvedValue([
+    vi.mocked(commands.getLogs).mockResolvedValue([
       { id: "1", timestamp: "t1", level: "info", message: "first", source: "Test" },
       { id: "2", timestamp: "t2", level: "info", message: "second", source: "Test" },
     ]);
@@ -33,7 +33,7 @@ describe("useLogStore", () => {
   });
 
   it("does not throw and stops loading when the backend fetch rejects", async () => {
-    vi.mocked(logApi.getLogs).mockRejectedValue(new Error("boom"));
+    vi.mocked(commands.getLogs).mockRejectedValue(new Error("boom"));
 
     await useLogStore.getState().fetchLogs();
 
@@ -45,18 +45,18 @@ describe("useLogStore", () => {
     useLogStore.setState({
       logs: [{ id: "1", timestamp: "t1", level: "info", message: "x", source: "Test" }],
     });
-    vi.mocked(logApi.clearLogs).mockResolvedValue(undefined);
+    vi.mocked(commands.clearLogs).mockResolvedValue(undefined);
 
     await useLogStore.getState().clearLogs();
 
-    expect(logApi.clearLogs).toHaveBeenCalledTimes(1);
+    expect(commands.clearLogs).toHaveBeenCalledTimes(1);
     expect(useLogStore.getState().logs).toEqual([]);
   });
 
   it("clearLogs leaves existing entries in place if the backend call fails", async () => {
     const existing = [{ id: "1", timestamp: "t1", level: "info" as const, message: "x", source: "Test" }];
     useLogStore.setState({ logs: existing });
-    vi.mocked(logApi.clearLogs).mockRejectedValue(new Error("boom"));
+    vi.mocked(commands.clearLogs).mockRejectedValue(new Error("boom"));
 
     await useLogStore.getState().clearLogs();
 

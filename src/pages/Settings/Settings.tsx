@@ -326,6 +326,91 @@ export const Settings: React.FC = () => {
         </Card>
       )}
 
+      {/* Registry Settings */}
+      {currentTab === "registry" && (
+        <Card className={mergeClasses(shared.card, styles.section)}>
+          <Title3>Registry Settings</Title3>
+          <Divider style={{ margin: "16px 0" }} />
+          <div className={styles.formGroup}>
+            <div className={styles.formItem}>
+              <div className={styles.formItemRow}>
+                <div>
+                  <Text weight="semibold">Registry Port</Text>
+                  <div className={styles.description}>
+                    Port for the local Verdaccio registry
+                  </div>
+                </div>
+                <Input
+                  type="number"
+                  value={localConfig.registry.port.toString()}
+                  onChange={(_, data) =>
+                    setLocalConfig({
+                      ...localConfig,
+                      registry: {
+                        ...localConfig.registry,
+                        port: parseInt(data.value) || 4873,
+                      },
+                    })
+                  }
+                  style={{ width: "120px" }}
+                />
+              </div>
+            </div>
+
+            <div className={styles.formItem}>
+              <div className={styles.formItemRow}>
+                <div>
+                  <Text weight="semibold">Storage Path</Text>
+                  <div className={styles.description}>
+                    Directory to store registry packages
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <Input
+                    value={localConfig.registry.storage_path}
+                    onChange={(_, data) =>
+                      setLocalConfig({
+                        ...localConfig,
+                        registry: { ...localConfig.registry, storage_path: data.value },
+                      })
+                    }
+                    style={{ width: "250px" }}
+                  />
+                  <FilePickerButton
+                    onSelect={(path) =>
+                      setLocalConfig({
+                        ...localConfig,
+                        registry: { ...localConfig.registry, storage_path: path },
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className={styles.formItem}>
+              <div className={styles.formItemRow}>
+                <div>
+                  <Text weight="semibold">Auto Start Registry</Text>
+                  <div className={styles.description}>
+                    Start registry automatically when app launches
+                  </div>
+                </div>
+                <Switch
+                  checked={localConfig.registry.auto_start}
+                  onChange={(_, data) =>
+                    setLocalConfig({
+                      ...localConfig,
+                      registry: { ...localConfig.registry, auto_start: data.checked },
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Watcher Settings */}
       {currentTab === "watcher" && (
         <Card className={mergeClasses(shared.card, styles.section)}>

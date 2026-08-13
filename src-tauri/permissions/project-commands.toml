@@ -12,4 +12,8 @@ commands.allow = [
     "create_sandbox",
     "run_sandbox_script",
     "get_package_scripts",
+    "run_workspace_task",
+    "run_package_task",
+    "run_security_audit",
+    "get_directory_size",
 ]

@@ -76,7 +76,7 @@ impl SafePath {
 
     /// Same as `safe_remove_all` but retries on failure — Windows can hold
     /// a brief file lock after a just-killed process exits.
-    pub async fn safe_remove_all_retry(
+    pub fn safe_remove_all_retry(
         &self,
         max_retries: u32,
         delay_ms: u64,
@@ -93,7 +93,7 @@ impl SafePath {
                 Err(e) => {
                     last_err = Some(e);
                     if attempt + 1 < max_retries {
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     }
                 }
             }

@@ -18,10 +18,10 @@ body {
 }
 
 /* Custom premium styles */
-.fui-Card {
+.interactive-card {
   transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out !important;
 }
-.fui-Card:hover {
+.interactive-card:hover {
   border-color: var(--colorBrandStroke1, #0f6cbd) !important;
   box-shadow: 0 4px 12px rgba(0,0,0,0.08) !important;
 }
@@ -46,3 +46,26 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(128, 128, 128, 0.6);
 }
+
+/* Force xterm helper textarea to be invisible */
+.xterm-helper-textarea {
+  position: absolute !important;
+  opacity: 0 !important;
+  z-index: -9999 !important;
+  width: 0 !important;
+  height: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  color: transparent !important;
+}
+
+/* Ensure xterm cursor is visible in all themes */
+.xterm .xterm-cursor {
+  mix-blend-mode: difference;
+}
+
+/* Fix xterm.js hardcoded black background in viewport showing as a border */
+.xterm .xterm-viewport {
+  background-color: inherit !important;
+}
+

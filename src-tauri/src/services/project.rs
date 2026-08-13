@@ -1,112 +1,169 @@
 use crate::models::project::{PackageInfo, PackageManager};
-use globset::{Glob, GlobSetBuilder};
+use crate::services::pm_engine::{
+    BunEngine, NpmEngine, PackageManagerEngine, PnpmEngine, YarnEngine,
+};
 use std::fs;
-use std::path::Path;
-use walkdir::WalkDir;
+use std::path::{Path, PathBuf};
 
 pub fn detect_pm(path: &Path) -> PackageManager {
-    if path.join("pnpm-lock.yaml").exists() {
-        return PackageManager::Pnpm;
-    } else if path.join("yarn.lock").exists() {
-        return PackageManager::Yarn;
-    } else if path.join("package-lock.json").exists() {
-        return PackageManager::Npm;
-    }
+    let mut current = Some(path);
+    while let Some(p) = current {
+        if p.join("pnpm-lock.yaml").exists() {
+            return PackageManager::Pnpm;
+        } else if p.join("bun.lock").exists() || p.join("bun.lockb").exists() {
+            return PackageManager::Bun;
+        } else if p.join("yarn.lock").exists() {
+            return PackageManager::Yarn;
+        } else if p.join("package-lock.json").exists() {
+            return PackageManager::Npm;
+        }
 
-    if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
-        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(pm) = pkg.get("packageManager").and_then(|v| v.as_str()) {
-                if pm.starts_with("pnpm") {
-                    return PackageManager::Pnpm;
-                } else if pm.starts_with("yarn") {
-                    return PackageManager::Yarn;
-                } else if pm.starts_with("npm") {
-                    return PackageManager::Npm;
+        if let Ok(content) = std::fs::read_to_string(p.join("package.json")) {
+            if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(pm) = pkg.get("packageManager").and_then(|v| v.as_str()) {
+                    let lower = pm.to_lowercase();
+                    if lower.starts_with("pnpm") {
+                        return PackageManager::Pnpm;
+                    } else if lower.starts_with("bun") {
+                        return PackageManager::Bun;
+                    } else if lower.starts_with("yarn") {
+                        return PackageManager::Yarn;
+                    } else if lower.starts_with("npm") {
+                        return PackageManager::Npm;
+                    }
                 }
             }
         }
+        
+        current = p.parent();
     }
 
     PackageManager::Unknown
 }
 
-pub fn scan_packages(path: &Path, extra_ignore: &[String]) -> Vec<PackageInfo> {
-    let mut builder = GlobSetBuilder::new();
-    let ignore_patterns = vec![
-        "node_modules",
-        ".git",
-        "dist",
-        "build",
-        "out",
-        "coverage",
-        "test",
-        "tests",
-        "__tests__",
-        "fixtures",
-        "__fixtures__",
-        ".next",
-        ".nuxt",
-        ".svelte-kit",
-        "e2e",
-        "cypress",
-    ];
+pub fn resolve_package_manager(
+    project_path: &Path,
+    configured_default: Option<PackageManager>,
+) -> PackageManager {
+    let mut current = Some(project_path);
+    while let Some(path) = current {
+        // Tier 1: Lockfile Detection
+        if path.join("pnpm-lock.yaml").exists() {
+            return PackageManager::Pnpm;
+        }
+        if path.join("bun.lock").exists() || path.join("bun.lockb").exists() {
+            return PackageManager::Bun;
+        }
+        if path.join("yarn.lock").exists() {
+            return PackageManager::Yarn;
+        }
+        if path.join("package-lock.json").exists() {
+            return PackageManager::Npm;
+        }
 
-    for pattern in ignore_patterns {
-        if let Ok(glob) = Glob::new(pattern) {
-            builder.add(glob);
+        // Tier 2: Manifest `packageManager` field
+        if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(pm_str) = json.get("packageManager").and_then(|v| v.as_str()) {
+                    let lower = pm_str.to_lowercase();
+                    if lower.starts_with("pnpm") {
+                        return PackageManager::Pnpm;
+                    }
+                    if lower.starts_with("bun") {
+                        return PackageManager::Bun;
+                    }
+                    if lower.starts_with("yarn") {
+                        return PackageManager::Yarn;
+                    }
+                    if lower.starts_with("npm") {
+                        return PackageManager::Npm;
+                    }
+                }
+            }
+        }
+
+        current = path.parent();
+    }
+
+    // Tier 3: Configured User Preference
+    if let Some(default_pm) = configured_default {
+        if default_pm != PackageManager::Unknown {
+            return default_pm;
         }
     }
 
-    for pattern in extra_ignore {
-        let mut pat = pattern.clone();
-        if !pat.contains('*') && !pat.contains('/') {
-            pat = format!("**/{}/**", pat);
-        }
-        if let Ok(glob) = Glob::new(&pat) {
-            builder.add(glob);
-        }
+    // Tier 4: Universal Fallback
+    PackageManager::Npm
+}
+
+pub fn get_engine(pm: PackageManager) -> Box<dyn PackageManagerEngine> {
+    match pm {
+        PackageManager::Pnpm => Box::new(PnpmEngine),
+        PackageManager::Yarn => Box::new(YarnEngine),
+        PackageManager::Bun => Box::new(BunEngine),
+        _ => Box::new(NpmEngine),
     }
+}
 
-    let set = builder.build().unwrap_or_default();
 
+
+
+pub fn scan_packages(path: &Path, _extra_ignore: &[String]) -> Vec<PackageInfo> {
     let mut packages = Vec::new();
+    let mut workspaces = crate::utils::workspace_resolver::resolve_workspaces(path);
+    
+    // Always ensure the root is scanned if it has a package.json
+    if !workspaces.contains(&".".to_string()) {
+        workspaces.push(".".to_string());
+    }
 
-    let walker = WalkDir::new(path)
-        .max_depth(5)
-        .into_iter()
-        .filter_entry(|e| {
-            let file_name = e.file_name().to_string_lossy();
-            !set.is_match(file_name.as_ref())
-        });
+    let glob_base = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
-    for entry in walker.filter_map(|e| e.ok()) {
-        if entry.file_name() == "package.json" {
-            let entry_path = entry.path();
-            if let Ok(content) = fs::read_to_string(entry_path) {
-                if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if pkg.get("name").is_some() {
-                        let info = PackageInfo {
-                            name: pkg["name"].as_str().unwrap_or("unknown").to_string(),
-                            version: pkg
-                                .get("version")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("0.0.0")
-                                .to_string(),
-                            path: entry_path
-                                .parent()
-                                .unwrap_or(path)
-                                .to_string_lossy()
-                                .to_string(),
-                            is_private: pkg
-                                .get("private")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false),
-                            dependencies: extract_deps(&pkg, "dependencies"),
-                            dev_dependencies: extract_deps(&pkg, "devDependencies"),
-                            peer_dependencies: extract_deps(&pkg, "peerDependencies"),
-                            has_cli: pkg.get("bin").is_some(),
-                        };
-                        packages.push(info);
+    for glob_str in workspaces {
+        let pattern_path = if glob_str == "." {
+            glob_base.join("package.json")
+        } else {
+            glob_base.join(&glob_str).join("package.json")
+        };
+        let pattern = pattern_path.to_string_lossy().replace("\\", "/");
+        
+        if let Ok(paths) = glob::glob(&pattern) {
+            for entry in paths.filter_map(|e| e.ok()) {
+                if let Ok(content) = fs::read_to_string(&entry) {
+                    if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if pkg.get("name").is_some() {
+                            let info = PackageInfo {
+                                name: pkg["name"].as_str().unwrap_or("unknown").to_string(),
+                                version: pkg
+                                    .get("version")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("0.0.0")
+                                    .to_string(),
+                                path: {
+                                    // `glob` matches against a forward-slash pattern (see
+                                    // `pattern` above) and reconstructs the result by mixing
+                                    // that separator with native ones, e.g.
+                                    // "D:/Projects\npm packages\pkg". Re-collecting through
+                                    // `components()` normalizes back to the native separator.
+                                    let normalized: PathBuf =
+                                        entry.parent().unwrap_or(&glob_base).components().collect();
+                                    normalized.to_string_lossy().to_string()
+                                },
+                                is_private: pkg
+                                    .get("private")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                                dependencies: extract_deps(&pkg, "dependencies"),
+                                dev_dependencies: extract_deps(&pkg, "devDependencies"),
+                                peer_dependencies: extract_deps(&pkg, "peerDependencies"),
+                                has_cli: pkg.get("bin").is_some(),
+                            };
+                            
+                            // Deduplicate
+                            if !packages.iter().any(|p: &PackageInfo| p.path == info.path) {
+                                packages.push(info);
+                            }
+                        }
                     }
                 }
             }
@@ -115,6 +172,7 @@ pub fn scan_packages(path: &Path, extra_ignore: &[String]) -> Vec<PackageInfo> {
 
     packages
 }
+
 
 pub fn extract_deps(
     pkg: &serde_json::Value,
@@ -203,6 +261,12 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("packlab_test_scan_packages");
         let _ = fs::create_dir_all(&temp_dir);
 
+        let pnpm_workspace = r#"
+packages:
+  - 'packages/*'
+"#;
+        fs::write(temp_dir.join("pnpm-workspace.yaml"), pnpm_workspace).unwrap();
+
         // Root package
         let root_pkg = json!({
             "name": "root-project",
@@ -222,6 +286,15 @@ mod tests {
         });
         fs::write(sub_dir.join("package.json"), sub_pkg.to_string()).unwrap();
 
+        // Dummy package (should be ignored since it's not in the workspace globs)
+        let dummy_dir = temp_dir.join("dummy-lib");
+        fs::create_dir_all(&dummy_dir).unwrap();
+        let dummy_pkg = json!({
+            "name": "dummy-lib",
+            "version": "0.1.0"
+        });
+        fs::write(dummy_dir.join("package.json"), dummy_pkg.to_string()).unwrap();
+
         let packages = scan_packages(&temp_dir, &[]);
         assert_eq!(packages.len(), 2);
 
@@ -232,7 +305,113 @@ mod tests {
         let sub_info = packages.iter().find(|p| p.name == "sub-lib").unwrap();
         assert!(!sub_info.is_private);
         assert!(sub_info.has_cli);
+        let expected_path = dunce::canonicalize(&sub_dir).unwrap_or_else(|_| sub_dir.clone());
+        let actual_path = dunce::canonicalize(PathBuf::from(&sub_info.path)).unwrap_or_else(|_| PathBuf::from(&sub_info.path));
+        assert_eq!(actual_path, expected_path);
+        #[cfg(windows)]
+        assert!(
+            !sub_info.path.contains('/'),
+            "package path must use native separators only, got {:?}",
+            sub_info.path
+        );
+
+        let dummy_info = packages.iter().find(|p| p.name == "dummy-lib");
+        assert!(dummy_info.is_none());
 
         let _ = fs::remove_dir_all(temp_dir);
     }
 }
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    struct TestTempDir {
+        path: PathBuf,
+    }
+
+    impl TestTempDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("packagepilot_test_{}_{}", name, uuid::Uuid::new_v4()));
+            let _ = fs::create_dir_all(&path);
+            TestTempDir { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn test_resolve_tier_1_lockfiles_bun() {
+        let temp = TestTempDir::new("tier1_bun");
+        fs::write(temp.path().join("bun.lockb"), "").unwrap();
+        assert_eq!(resolve_package_manager(temp.path(), Some(PackageManager::Npm)), PackageManager::Bun);
+    }
+
+    #[test]
+    fn test_resolve_tier_1_lockfiles_all() {
+        let temp = TestTempDir::new("tier1_all");
+
+        fs::write(temp.path().join("pnpm-lock.yaml"), "").unwrap();
+        assert_eq!(resolve_package_manager(temp.path(), None), PackageManager::Pnpm);
+        fs::remove_file(temp.path().join("pnpm-lock.yaml")).unwrap();
+
+        fs::write(temp.path().join("bun.lock"), "").unwrap();
+        assert_eq!(resolve_package_manager(temp.path(), None), PackageManager::Bun);
+        fs::remove_file(temp.path().join("bun.lock")).unwrap();
+
+        fs::write(temp.path().join("yarn.lock"), "").unwrap();
+        assert_eq!(resolve_package_manager(temp.path(), None), PackageManager::Yarn);
+        fs::remove_file(temp.path().join("yarn.lock")).unwrap();
+
+        fs::write(temp.path().join("package-lock.json"), "").unwrap();
+        assert_eq!(resolve_package_manager(temp.path(), None), PackageManager::Npm);
+        fs::remove_file(temp.path().join("package-lock.json")).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_tier_2_package_json() {
+        let temp = TestTempDir::new("tier2_pkg");
+        let pkg = serde_json::json!({ "packageManager": "bun@1.0.0" });
+        fs::write(temp.path().join("package.json"), pkg.to_string()).unwrap();
+        assert_eq!(resolve_package_manager(temp.path(), Some(PackageManager::Npm)), PackageManager::Bun);
+    }
+
+    #[test]
+    fn test_resolve_tier_3_configured_default() {
+        let temp = TestTempDir::new("tier3_pref");
+        assert_eq!(resolve_package_manager(temp.path(), Some(PackageManager::Pnpm)), PackageManager::Pnpm);
+    }
+
+    #[test]
+    fn test_resolve_tier_4_fallback_npm() {
+        let temp = TestTempDir::new("tier4_fallback");
+        assert_eq!(resolve_package_manager(temp.path(), None), PackageManager::Npm);
+    }
+
+    #[test]
+    fn test_get_engine_factory() {
+        let engine = get_engine(PackageManager::Pnpm);
+        assert_eq!(engine.name(), "pnpm");
+
+        let bun_engine = get_engine(PackageManager::Bun);
+        assert_eq!(bun_engine.name(), "bun");
+
+        let yarn_engine = get_engine(PackageManager::Yarn);
+        assert_eq!(yarn_engine.name(), "yarn");
+
+        let npm_engine = get_engine(PackageManager::Npm);
+        assert_eq!(npm_engine.name(), "npm");
+    }
+}
+
+

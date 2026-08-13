@@ -12,7 +12,7 @@ import {
 import { SearchRegular } from "@fluentui/react-icons";
 import { useProjectStore } from "../../store/useProjectStore";
 import { useLinkStore } from "../../store/useLinkStore";
-import { utilityApi, doctorApi } from "../../services/tauriApi";
+import { commands } from "../../bindings";
 import { useToastController, Toast, ToastTitle, Toaster, useId } from "@fluentui/react-components";
 
 const useStyles = makeStyles({
@@ -88,18 +88,41 @@ export const CommandPalette: React.FC<{ onNavigate?: (path: string) => void }> =
         setPendingTab("create");
       },
     },
-
+    {
+      id: "start-registry",
+      label: "Start Local Registry (Verdaccio)",
+      perform: async () => {
+        const res = await commands.startRegistry(null);
+        if (res.status === "ok") {
+          dispatchToast(<Toast><ToastTitle>Registry started</ToastTitle></Toast>, { intent: "success" });
+        } else {
+          dispatchToast(<Toast><ToastTitle>{res.error}</ToastTitle></Toast>, { intent: "error" });
+        }
+      },
+    },
+    {
+      id: "stop-registry",
+      label: "Stop Local Registry",
+      perform: async () => {
+        const res = await commands.stopRegistry();
+        if (res.status === "ok") {
+          dispatchToast(<Toast><ToastTitle>Registry stopped</ToastTitle></Toast>, { intent: "success" });
+        } else {
+          dispatchToast(<Toast><ToastTitle>{res.error}</ToastTitle></Toast>, { intent: "error" });
+        }
+      },
+    },
     {
       id: "export-diagnostics",
       label: "Export Diagnostics...",
       perform: async () => {
-        try {
-          const path = await doctorApi.exportDiagnostics();
-          if (path) {
-            dispatchToast(<Toast><ToastTitle>Diagnostics exported to {path}</ToastTitle></Toast>, { intent: "success" });
+        const res = await commands.exportDiagnostics();
+        if (res.status === "ok") {
+          if (res.data) {
+            dispatchToast(<Toast><ToastTitle>Diagnostics exported to {res.data}</ToastTitle></Toast>, { intent: "success" });
           }
-        } catch (err: any) {
-          dispatchToast(<Toast><ToastTitle>{err.toString()}</ToastTitle></Toast>, { intent: "error" });
+        } else {
+          dispatchToast(<Toast><ToastTitle>{res.error}</ToastTitle></Toast>, { intent: "error" });
         }
       },
     },
@@ -143,6 +166,7 @@ export const CommandPalette: React.FC<{ onNavigate?: (path: string) => void }> =
   }, [open]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedIndex(0);
   }, [search]);
 

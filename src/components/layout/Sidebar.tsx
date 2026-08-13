@@ -1,4 +1,5 @@
 import React from "react";
+import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import {
   makeStyles,
@@ -10,17 +11,21 @@ import {
   BoxRegular,
   LinkRegular,
   EyeRegular,
+  DatabaseRegular,
   StethoscopeRegular,
   DocumentTextRegular,
   SettingsRegular,
   PowerRegular,
+  DataBarVerticalRegular,
 } from "@fluentui/react-icons";
 import { Page } from "./AppLayout";
+import { useProjectStore } from "../../store/useProjectStore";
 
 const useStyles = makeStyles({
   sidebar: {
     width: "240px",
-    backgroundColor: tokens.colorNeutralBackground1,
+    backgroundColor: `color-mix(in srgb, ${tokens.colorNeutralBackground1} 70%, transparent)`,
+    backdropFilter: "blur(20px)",
     borderRight: `1px solid ${tokens.colorNeutralStroke1}`,
     display: "flex",
     flexDirection: "column",
@@ -40,12 +45,12 @@ const useStyles = makeStyles({
     gap: "12px",
     fontSize: "14px",
     color: tokens.colorNeutralForeground2,
+    position: "relative",
     "&:hover": {
       backgroundColor: tokens.colorNeutralBackground1Hover,
     },
   },
   navItemActive: {
-    backgroundColor: tokens.colorBrandBackground2,
     color: tokens.colorBrandForeground1,
     fontWeight: "600",
   },
@@ -75,10 +80,13 @@ interface SidebarProps {
 
 const navItems: { id: Page; label: string; icon: React.ReactElement }[] = [
   { id: "dashboard", label: "Dashboard", icon: <BoardRegular /> },
+  { id: "analytics", label: "Analytics", icon: <DataBarVerticalRegular /> },
   { id: "projects", label: "Projects", icon: <FolderRegular /> },
   { id: "packages", label: "Packages", icon: <BoxRegular /> },
+  { id: "topology", label: "Workspace", icon: <BoxRegular /> },
   { id: "links", label: "Link Manager", icon: <LinkRegular /> },
   { id: "watcher", label: "Watcher", icon: <EyeRegular /> },
+  { id: "registry", label: "Local Registry", icon: <DatabaseRegular /> },
   { id: "doctor", label: "Doctor", icon: <StethoscopeRegular /> },
   { id: "logs", label: "Logs", icon: <DocumentTextRegular /> },
   { id: "settings", label: "Settings", icon: <SettingsRegular /> },
@@ -86,6 +94,7 @@ const navItems: { id: Page; label: string; icon: React.ReactElement }[] = [
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange }) => {
   const styles = useStyles();
+  const { selectedProject } = useProjectStore();
 
   const handleExit = async () => {
     try {
@@ -102,14 +111,36 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange }) =
         Package Pilot
       </div>
       <div className={styles.navList}>
-        {navItems.map((item) => (
+        {navItems.filter(item => {
+          if (item.id === "topology") {
+            return selectedProject && selectedProject.workspace_tool !== "None";
+          }
+          return true;
+        }).map((item) => (
           <div
             key={item.id}
             className={`${styles.navItem} ${currentPage === item.id ? styles.navItemActive : ""}`}
             onClick={() => onPageChange(item.id)}
           >
-            {item.icon}
-            <span>{item.label}</span>
+            {currentPage === item.id && (
+              <motion.div
+                layoutId="active-nav-indicator"
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  backgroundColor: tokens.colorBrandBackground2,
+                  borderRadius: "6px",
+                  zIndex: 0,
+                }}
+              />
+            )}
+            <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: "12px" }}>
+              {item.icon}
+              <span>{item.label}</span>
+            </span>
           </div>
         ))}
       </div>

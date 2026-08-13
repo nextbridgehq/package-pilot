@@ -24,7 +24,7 @@ import {
 } from "@fluentui/react-icons";
 import { StatusBadge } from "../../components/common/StatusBadge";
 import { useSharedStyles } from "../../styles/useSharedStyles";
-import { utilityApi, linkApi, ptyApi } from "../../services/tauriApi";
+import { commands } from "../../bindings";
 import { useWatcherStore } from "../../store/useWatcherStore";
 import { Terminal, TerminalRef } from "../../components/common/Terminal";
 import { LinkEntry, LinkStatus } from "../../types/link";
@@ -84,17 +84,18 @@ export const LinkListItem: React.FC<LinkListItemProps> = ({
   const onToggleWatch = async () => {
     try {
       if (link.watch_enabled) {
-        ptyApi.write(link.id, "\x03");
-        await linkApi.toggleWatch(link.id, false);
+        commands.writePty(link.id, "\x03");
+        await commands.toggleLinkWatch(link.id, false);
         await useWatcherStore.getState().stopWatching(link.id);
       } else {
-        const cmd = await linkApi.getWatchCommand(link.source_path);
+        const res = await commands.getWatchCommand(link.source_path);
+        const cmd = res.status === "ok" ? res.data : null;
         if (cmd) {
           setTerminalCmd(cmd);
           setShowTerminal(true);
-          await linkApi.toggleWatch(link.id, true);
+          await commands.toggleLinkWatch(link.id, true);
         } else {
-          await linkApi.toggleWatch(link.id, true);
+          await commands.toggleLinkWatch(link.id, true);
           dispatchToast(
             <Toast><ToastTitle>No watch script found — file watcher enabled without auto-rebuild</ToastTitle></Toast>,
             { intent: "info" }
@@ -139,18 +140,16 @@ export const LinkListItem: React.FC<LinkListItemProps> = ({
             onClick={() => setShowTerminal(prev => !prev)}
             title={showTerminal ? "Hide Terminal" : "Show Terminal"}
           />
-          {link.has_cli && (
-            <Button
-              appearance="subtle"
-              icon={running ? <Spinner size="tiny" /> : <PlayCircleRegular />}
-              onClick={() => onRunScript(link.id, link.target_path, link.source_package)}
-              title="Run Package Help in Sandbox"
-            />
-          )}
+          <Button
+            appearance="subtle"
+            icon={running ? <Spinner size="tiny" /> : <PlayCircleRegular />}
+            onClick={() => onRunScript(link.id, link.target_path, link.source_package)}
+            title="Run Import & CLI Smoke Test in Sandbox"
+          />
           <Button
             appearance="subtle"
             icon={<FolderRegular />}
-            onClick={() => utilityApi.openInExplorer(link.target_path)}
+            onClick={() => commands.openInExplorer(link.target_path)}
             title="Open Target Project Folder"
           />
           <Button

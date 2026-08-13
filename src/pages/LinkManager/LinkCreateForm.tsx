@@ -25,7 +25,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { FilePickerButton } from "../../components/common/FilePickerButton";
 import { ScriptPreviewPanel } from "./ScriptPreviewPanel";
-import { projectApi } from "../../services/tauriApi";
+import { commands } from "../../bindings";
 import { LinkMethod, LinkRequest } from "../../types/link";
 import { useSharedStyles } from "../../styles/useSharedStyles";
 
@@ -151,7 +151,7 @@ export const LinkCreateForm: React.FC<LinkCreateFormProps> = ({ onSuccess, toast
     if (knownPackage) {
       setHasCli(knownPackage.has_cli ?? false);
     } else {
-      projectApi
+      commands
         .checkPackageCli(sourcePath)
         .then(setHasCli)
         .catch(() => setHasCli(false));
@@ -161,7 +161,9 @@ export const LinkCreateForm: React.FC<LinkCreateFormProps> = ({ onSuccess, toast
   const handleCreateLink = async () => {
     if (config?.general.allow_lifecycle_scripts && sourcePath) {
       try {
-        const scripts = await projectApi.getPackageScripts(sourcePath);
+        const res = await commands.getPackageScripts(sourcePath);
+        if (res.status === "error") throw res.error;
+        const scripts = res.data;
         const lifecycleScripts = scripts.filter((s: any) => s.is_lifecycle);
         if (lifecycleScripts.length > 0) {
           const { confirm } = await import("@tauri-apps/plugin-dialog");
@@ -264,23 +266,22 @@ export const LinkCreateForm: React.FC<LinkCreateFormProps> = ({ onSuccess, toast
               Target Project (the project consuming the package)
             </Text>
             <Tooltip
-              content={
-                hasCli
-                  ? "Auto-create a temporary sandbox folder"
-                  : "Sandbox is only available for CLI packages. Please select a target project to test this library."
-              }
+              content="Automatically generates a temporary clean sandbox project as the target path to test package imports and CLI execution."
               relationship="label"
             >
               <Button
                 appearance="transparent"
                 size="small"
                 icon={<AddRegular />}
-                disabled={!hasCli}
                 onClick={async () => {
                   try {
                     const selectedPackage = allPackages.find((p) => p.path === sourcePath);
-                    const path = await projectApi.createSandbox(selectedPackage?.path);
-                    setTargetPath(path);
+                    const res = await commands.createSandbox(selectedPackage?.path ?? null);
+                    if (res.status === "ok") {
+                      setTargetPath(res.data);
+                    } else {
+                      throw res.error;
+                    }
                   } catch (e) {
                     console.error("Failed to create sandbox", e);
                   }

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Card, Text, Badge, tokens, makeStyles } from "@fluentui/react-components";
 import { WarningRegular, ShieldCheckmarkRegular, ErrorCircleRegular } from "@fluentui/react-icons";
-import { projectApi, ScriptInfo } from "../../services/tauriApi";
+import { commands, ScriptInfo } from "../../bindings";
 import { LinkMethod } from "../../types/link";
 import { useSettingsStore } from "../../store/useSettingsStore";
 
@@ -9,18 +9,68 @@ const useStyles = makeStyles({
   container: {
     display: "flex",
     flexDirection: "column",
-    gap: "8px",
+    gap: "12px",
     marginTop: "12px",
   },
-  scriptRow: {
+  scriptCardHigh: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    padding: "12px",
+    borderRadius: "6px",
+    backgroundColor: tokens.colorNeutralBackground3,
+    borderLeft: `4px solid ${tokens.colorPaletteRedBorderActive}`,
+  },
+  scriptCardMedium: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    padding: "12px",
+    borderRadius: "6px",
+    backgroundColor: tokens.colorNeutralBackground3,
+    borderLeft: `4px solid ${tokens.colorPaletteDarkOrangeBorderActive}`,
+  },
+  scriptCardLow: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    padding: "12px",
+    borderRadius: "6px",
+    backgroundColor: tokens.colorNeutralBackground3,
+    borderLeft: `4px solid ${tokens.colorNeutralStroke1}`,
+  },
+  headerRow: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: "8px 12px",
-    borderRadius: "6px",
+    flexWrap: "wrap",
+    gap: "8px",
+  },
+  scriptName: {
+    fontFamily: "monospace",
+    fontWeight: 600,
+    fontSize: "14px",
+  },
+  badgeGroup: {
+    display: "flex",
+    gap: "6px",
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  commandBox: {
     fontFamily: "monospace",
     fontSize: "12px",
-    backgroundColor: tokens.colorNeutralBackground3,
+    backgroundColor: tokens.colorNeutralBackground1,
+    padding: "8px 10px",
+    borderRadius: "4px",
+    overflowX: "auto",
+  },
+  rationaleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "11px",
+    color: tokens.colorNeutralForeground2,
   },
   safeRow: {
     display: "flex",
@@ -66,10 +116,10 @@ export const ScriptPreviewPanel: React.FC<ScriptPreviewPanelProps> = ({ sourcePa
       return;
     }
     let cancelled = false;
-    projectApi
+    commands
       .getPackageScripts(sourcePath)
-      .then((result) => {
-        if (!cancelled) setScripts(result);
+      .then((res) => {
+        if (!cancelled) setScripts(res.status === "ok" ? res.data || [] : []);
       })
       .catch(() => {
         if (!cancelled) setScripts([]);
@@ -85,7 +135,7 @@ export const ScriptPreviewPanel: React.FC<ScriptPreviewPanelProps> = ({ sourcePa
 
   if (lifecycleScripts.length === 0) {
     return (
-      <Card className={styles.container} style={{ padding: "8px 12px" }}>
+      <Card className={styles.container} style={{ padding: "10px 14px" }}>
         <div className={styles.safeRow}>
           <ShieldCheckmarkRegular />
           <Text size={200}>No lifecycle scripts detected in this package&apos;s package.json.</Text>
@@ -97,7 +147,7 @@ export const ScriptPreviewPanel: React.FC<ScriptPreviewPanelProps> = ({ sourcePa
   const isYalc = method === "Yalc";
 
   return (
-    <Card className={styles.container} style={{ padding: "12px" }}>
+    <Card className={styles.container} style={{ padding: "14px" }}>
       {isYalc ? (
         <div className={styles.yalcWarningHeader}>
           <ErrorCircleRegular />
@@ -124,18 +174,52 @@ export const ScriptPreviewPanel: React.FC<ScriptPreviewPanelProps> = ({ sourcePa
           </Text>
         </div>
       )}
-      {lifecycleScripts.map((script) => (
-        <div key={script.name} className={styles.scriptRow}>
-          <Text size={200}>
-            {script.name}: {script.command}
-          </Text>
-          <Badge
-            color={script.risk_level === "high" ? "danger" : script.risk_level === "medium" ? "warning" : "informative"}
-          >
-            {script.risk_level}
-          </Badge>
-        </div>
-      ))}
+
+      {lifecycleScripts.map((script) => {
+        const risk = script.risk_level?.toLowerCase() || "low";
+        const cardStyle =
+          risk === "high"
+            ? styles.scriptCardHigh
+            : risk === "medium"
+            ? styles.scriptCardMedium
+            : styles.scriptCardLow;
+        const badgeColor =
+          risk === "high" ? "danger" : risk === "medium" ? "warning" : "informative";
+        const badgeText = risk.toUpperCase() + " RISK";
+
+        return (
+          <div key={script.name} className={cardStyle}>
+            <div className={styles.headerRow}>
+              <span className={styles.scriptName}>{script.name}</span>
+              <div className={styles.badgeGroup}>
+                <Badge color={badgeColor} appearance="filled">
+                  {badgeText}
+                </Badge>
+                {script.threat_categories?.map((category) => (
+                  <Badge key={category} color="subtle" appearance="outline">
+                    {category}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            <div className={styles.commandBox}>{script.command}</div>
+            {script.risk_explanation && (
+              <div className={styles.rationaleRow}>
+                {risk === "high" ? (
+                  <ErrorCircleRegular style={{ color: tokens.colorPaletteRedForeground1 }} />
+                ) : risk === "medium" ? (
+                  <WarningRegular style={{ color: tokens.colorPaletteDarkOrangeForeground1 }} />
+                ) : (
+                  <ShieldCheckmarkRegular style={{ color: tokens.colorPaletteGreenForeground1 }} />
+                )}
+                <Text size={100}>
+                  <strong>Security Analysis:</strong> {script.risk_explanation}
+                </Text>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </Card>
   );
 };

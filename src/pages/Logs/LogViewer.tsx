@@ -91,6 +91,7 @@ export const LogViewer: React.FC = () => {
   const { logs, clearLogs, fetchLogs } = useLogStore();
   const parentRef = useRef<HTMLDivElement>(null);
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: logs.length,
     getScrollElement: () => parentRef.current,

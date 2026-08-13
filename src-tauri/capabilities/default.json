@@ -14,6 +14,7 @@
     "allow-doctor-commands",
     "allow-config-commands",
     "allow-utility-commands",
-    "allow-logs-commands"
+    "allow-logs-commands",
+    "allow-analytics-commands"
   ]
 }

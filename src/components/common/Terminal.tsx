@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
-import { Terminal as XTerm } from "@xterm/xterm";
+import type { Terminal as XTerm } from "@xterm/xterm";
 import { IPC_EVENTS } from "../../constants/ipc";
-import { FitAddon } from "@xterm/addon-fit";
 import { listen } from "@tauri-apps/api/event";
-import { ptyApi } from "../../services/tauriApi";
+import { commands } from "../../bindings";
+import { createConfiguredTerminal } from "../../services/terminalConfig";
+import { fitIfVisible, syncPtySize, observePaneResize } from "../../services/terminalSizing";
+import { Toaster, useId, useToastController, Toast, ToastTitle } from "@fluentui/react-components";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalProps {
@@ -14,37 +16,35 @@ interface TerminalProps {
 
 export interface TerminalRef {
   writeCommand: (cmd: string) => void;
+  /** Prints text into the view. Used by LinkManager for smoke-test output. */
+  write: (data: string) => void;
 }
 
 export const Terminal = forwardRef<TerminalRef, TerminalProps>(({ directory, sessionId, initialCommand }, ref) => {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const toasterId = useId("common-terminal-toaster");
+  const { dispatchToast } = useToastController(toasterId);
 
   useImperativeHandle(ref, () => ({
     writeCommand: (cmd: string) => {
       if (sessionIdRef.current) {
-        ptyApi.write(sessionIdRef.current, cmd + "\r");
+        void commands.writePty(sessionIdRef.current, cmd + "\r");
       }
-    }
+    },
+    write: (data: string) => {
+      xtermRef.current?.write(data);
+    },
   }));
 
   useEffect(() => {
     if (!wrapperRef.current) return;
 
-    const term = new XTerm({
-      theme: {
-        background: '#1e1e1e',
-        foreground: '#cccccc',
-        cursor: '#ffffff',
-      },
-      fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
-      fontSize: 13,
-      cursorBlink: true,
-      scrollback: 10000,
-    });
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
+    // The wrapper has a hardcoded dark background (#1e1e1e), so the terminal
+    // must always use the dark theme (white text) to be visible, regardless of app theme.
+    const mode = "dark";
+    const { term, fitAddon } = createConfiguredTerminal(mode);
     term.open(wrapperRef.current);
     xtermRef.current = term;
 
@@ -53,22 +53,8 @@ export const Terminal = forwardRef<TerminalRef, TerminalProps>(({ directory, ses
 
     // Register onResize immediately before async ops
     term.onResize((size) => {
-      if (currentSessionId) ptyApi.resize(currentSessionId, size.rows, size.cols);
+      if (currentSessionId) commands.resizePty(currentSessionId, size.rows, size.cols);
     });
-
-    // Defer fit to ensure DOM is fully painted
-    const fitTimeout = setTimeout(() => {
-      if (unmounted) return;
-      try {
-        fitAddon.fit();
-        // Also manually sync size just in case onResize didn't fire (if default size happened to match fit)
-        if (currentSessionId) {
-          ptyApi.resize(currentSessionId, term.rows, term.cols);
-        }
-      } catch (e) {
-        console.warn("xterm fitAddon error:", e);
-      }
-    }, 100);
 
     const initPty = async () => {
       try {
@@ -89,38 +75,43 @@ export const Terminal = forwardRef<TerminalRef, TerminalProps>(({ directory, ses
             return () => {};
         }
 
-        const history = await ptyApi.attach(sid);
-        if (history !== null) {
+        const historyRes = await commands.attachPty(sid);
+        const history = historyRes.status === "ok" ? historyRes.data : null;
+        if (history != null) {
           console.log("Attached to existing PTY session:", sid);
           term.write(history);
           term.scrollToBottom();
         } else {
           console.log("Spawning PTY in directory:", directory);
-          await ptyApi.spawn(sid, directory);
+          fitIfVisible(wrapperRef.current, fitAddon);
+          const res = await commands.spawnPty(sid, directory, term.cols || 80, term.rows || 24);
+          if (res.status === "error") {
+            dispatchToast(
+              <Toast><ToastTitle>Failed to spawn PTY: {String(res.error)}</ToastTitle></Toast>,
+              { intent: "error" }
+            );
+            throw new Error(String(res.error));
+          }
+          syncPtySize(sid, term);
           console.log("PTY spawned with session ID:", sid);
           if (initialCommand) {
-            ptyApi.write(sid, initialCommand + "\r");
+            commands.writePty(sid, initialCommand + "\r");
           }
         }
 
         term.onData((data) => {
-          if (currentSessionId) ptyApi.write(currentSessionId, data);
+          if (currentSessionId) commands.writePty(currentSessionId, data);
         });
         
         // Sync initial size in case fit() ran before spawn finished
-        ptyApi.resize(sid, term.rows, term.cols);
+        commands.resizePty(sid, term.rows, term.cols);
 
-        const resizeObserver = new ResizeObserver(() => {
-          try {
-            fitAddon.fit();
-          } catch { /* ignore resize errors */ }
+        const stopObserving = observePaneResize(wrapperRef.current!, () => {
+          if (fitIfVisible(wrapperRef.current, fitAddon)) syncPtySize(sid, term);
         });
-        if (wrapperRef.current) {
-          resizeObserver.observe(wrapperRef.current);
-        }
 
         return () => {
-          resizeObserver.disconnect();
+          stopObserving();
           unlisten();
         };
       } catch (err) {
@@ -134,10 +125,9 @@ export const Terminal = forwardRef<TerminalRef, TerminalProps>(({ directory, ses
 
     return () => {
       unmounted = true;
-      clearTimeout(fitTimeout);
       unlistenPromise.then(unlisten => unlisten && unlisten());
       if (currentSessionId && !sessionId) {
-        ptyApi.kill(currentSessionId);
+        commands.killPty(currentSessionId);
       }
       term.dispose();
     };
@@ -145,9 +135,12 @@ export const Terminal = forwardRef<TerminalRef, TerminalProps>(({ directory, ses
   }, [directory, sessionId]);
 
   return (
-    <div style={{ width: "100%", height: "300px", minHeight: "150px", maxHeight: "500px", padding: "16px", overflow: "hidden", resize: "vertical", boxSizing: "border-box", borderRadius: "4px", backgroundColor: "#1e1e1e" }}>
-      <div ref={wrapperRef} style={{ width: "100%", height: "100%" }} />
-    </div>
+    <>
+      <Toaster toasterId={toasterId} position="top-end" />
+      <div style={{ width: "100%", height: "300px", minHeight: "150px", maxHeight: "500px", padding: "16px", overflow: "hidden", resize: "vertical", boxSizing: "border-box", borderRadius: "4px", backgroundColor: "#1e1e1e" }}>
+        <div ref={wrapperRef} style={{ width: "100%", height: "100%" }} />
+      </div>
+    </>
   );
 });
 

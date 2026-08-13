@@ -6,79 +6,18 @@ pub mod logs;
 pub mod package_manager;
 pub mod project;
 pub mod pty;
+pub mod registry;
 pub mod watcher;
+pub mod analytics;
 
 use crate::state::app_state::LockExt;
 use tauri_plugin_dialog::DialogExt;
 
-#[tauri::command]
-#[specta::specta]
-
-pub async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let folder = tokio::task::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(folder.map(|f| f.to_string()))
-}
-
-#[tauri::command]
-#[specta::specta]
-
-pub fn open_terminal(
-    path: String,
-    state: tauri::State<'_, crate::state::app_state::AppState>,
+pub fn validate_path_within_project_or_sandbox(
+    path: &str,
+    state: &crate::state::app_state::AppState,
 ) -> Result<(), String> {
-    crate::utils::validation::validate_shell_arg(&path).map_err(|e| e.to_string())?;
-
-    // Verify path is under a known project or sandbox
-    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-    let persistent = state.persistent.lock_safe();
-    let is_allowed = {
-        let sandbox_base = std::env::temp_dir().join("PackagePilot_Sandboxes");
-        let is_sandbox = std::fs::canonicalize(&sandbox_base)
-            .map(|base| canonical.starts_with(&base))
-            .unwrap_or(false);
-        is_sandbox
-            || persistent.projects.iter().any(|p| {
-                std::fs::canonicalize(&p.path)
-                    .map(|cp| canonical.starts_with(&cp))
-                    .unwrap_or(false)
-            })
-    };
-    if !is_allowed {
-        return Err("Path must be within a registered project or sandbox".to_string());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args([
-            "/c",
-            "start",
-            "powershell",
-            "-NoExit",
-            "-Command",
-            &format!("cd '{}'", path),
-        ]);
-        cmd.env_clear();
-        cmd.envs(crate::utils::env_filter::sanitized_env());
-        cmd.spawn().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-
-pub fn open_in_explorer(
-    path: String,
-    state: tauri::State<'_, crate::state::app_state::AppState>,
-) -> Result<(), String> {
-    crate::utils::validation::validate_shell_arg(&path).map_err(|e| e.to_string())?;
-
-    // Verify path is under a known project or sandbox
-    let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
     let persistent = state.persistent.lock_safe();
     let is_allowed = {
         let sandbox_base = std::env::temp_dir().join("PackagePilot_Sandboxes");
@@ -100,6 +39,83 @@ pub fn open_in_explorer(
     if !is_allowed {
         return Err("Path must be within a registered project or sandbox".to_string());
     }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+
+pub async fn open_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let folder = tokio::task::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(folder.map(|f| f.to_string()))
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+
+pub fn open_terminal(
+    path: String,
+    state: tauri::State<'_, crate::state::app_state::AppState>,
+) -> Result<(), String> {
+    crate::utils::validation::validate_shell_arg(&path).map_err(|e| e.to_string())?;
+
+    validate_path_within_project_or_sandbox(&path, &state)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args([
+            "/c",
+            "start",
+            "powershell",
+            "-NoExit",
+            "-Command",
+            &format!("cd '{}'", path),
+        ]);
+        cmd.env_clear();
+        cmd.envs(crate::utils::env_filter::sanitized_env());
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        cmd.args(["-a", "Terminal", &path]);
+        cmd.env_clear();
+        cmd.envs(crate::utils::env_filter::sanitized_env());
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = std::process::Command::new("gnome-terminal");
+        cmd.args(["--working-directory", &path]);
+        cmd.env_clear();
+        cmd.envs(crate::utils::env_filter::sanitized_env());
+        if cmd.spawn().is_err() {
+            let mut xterm = std::process::Command::new("xterm");
+            xterm.args(["-e", &format!("cd '{}' && bash", path)]);
+            xterm.env_clear();
+            xterm.envs(crate::utils::env_filter::sanitized_env());
+            xterm.spawn().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+
+pub fn open_in_explorer(
+    path: String,
+    state: tauri::State<'_, crate::state::app_state::AppState>,
+) -> Result<(), String> {
+    crate::utils::validation::validate_shell_arg(&path).map_err(|e| e.to_string())?;
+
+    validate_path_within_project_or_sandbox(&path, &state)?;
 
     #[cfg(target_os = "windows")]
     {
@@ -125,6 +141,38 @@ pub fn open_in_explorer(
     Ok(())
 }
 
+#[tauri::command(async)]
+#[specta::specta]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("URL must start with http:// or https://".to_string());
+    }
+    crate::utils::validation::validate_shell_arg(&url).map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn quit_app(app_handle: tauri::AppHandle) {
@@ -132,6 +180,14 @@ pub fn quit_app(app_handle: tauri::AppHandle) {
     let state = app_handle.state::<crate::state::app_state::AppState>();
     if state.dirty.load(std::sync::atomic::Ordering::SeqCst) {
         state.force_save();
+    }
+    let pid = {
+        let registry_state = app_handle.state::<crate::state::app_state::RegistryState>();
+        let x = registry_state.process_id.lock_safe().take();
+        x
+    };
+    if let Some(p) = pid {
+        let _ = crate::utils::process::kill_process_tree(p);
     }
     // Graceful shutdown via the event loop: fires RunEvent::ExitRequested and
     // runs managed-state destructors (PtySession::drop kills PTY children)
@@ -177,7 +233,9 @@ pub fn cmd_name(name: &str) -> String {
         return path.to_string_lossy().to_string();
     }
 
-    if cfg!(target_os = "windows") && ["npm", "yarn", "pnpm", "yalc", "npx"].contains(&name) {
+    if cfg!(target_os = "windows")
+        && ["npm", "yarn", "pnpm", "yalc", "npx", "verdaccio"].contains(&name)
+    {
         return format!("{}.cmd", name);
     }
     name.to_string()

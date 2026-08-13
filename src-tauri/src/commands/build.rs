@@ -15,9 +15,13 @@ pub async fn run_build(
 
     let _ = app.emit("build-started", &path);
 
+    let pm = crate::services::project::resolve_package_manager(std::path::Path::new(&path), None);
+    let engine = crate::services::project::get_engine(pm);
+    let cmd = engine.run_script_cmd(&build_script, &[]);
+
     let output = crate::services::shell::run_command_raw(
-        "npm",
-        &["run", &build_script],
+        &cmd.program,
+        &cmd.args.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
         &path,
         std::time::Duration::from_secs(300),
     )
@@ -61,9 +65,18 @@ pub async fn run_install(
 ) -> Result<String, AppError> {
     let _ = app.emit("install-started", &path);
 
+    let pm = crate::services::project::resolve_package_manager(std::path::Path::new(&path), None);
+    let engine = crate::services::project::get_engine(pm);
+    let opts = crate::models::project::InstallOptions {
+        target_tarball: None,
+        ignore_scripts: false,
+        no_save: false,
+    };
+    let cmd = engine.install_cmd(&opts);
+
     let output = crate::services::shell::run_command_raw(
-        "npm",
-        &["install"],
+        &cmd.program,
+        &cmd.args.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
         &path,
         std::time::Duration::from_secs(300),
     )
@@ -96,3 +109,20 @@ pub async fn run_install(
     );
     Ok(stdout)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::services::project::{get_engine, resolve_package_manager};
+    use crate::models::project::PackageManager;
+    use std::path::Path;
+
+    #[test]
+    fn test_build_engine_dispatch() {
+        let pm = resolve_package_manager(Path::new("."), Some(PackageManager::Pnpm));
+        let engine = get_engine(pm);
+        let cmd = engine.run_script_cmd("build", &[]);
+        assert_eq!(cmd.program, "pnpm");
+        assert_eq!(cmd.args, vec!["run", "build"]);
+    }
+}
+

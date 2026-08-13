@@ -28,6 +28,7 @@ pub async fn run_diagnostics() -> Result<Vec<DiagnosticResult>, String> {
         check_yarn(),
         check_pnpm(),
         check_yalc(),
+        check_verdaccio(),
         check_symlink_perms(),
         check_developer_mode(),
     ];
@@ -35,14 +36,14 @@ pub async fn run_diagnostics() -> Result<Vec<DiagnosticResult>, String> {
     Ok(results)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 
 pub fn check_symlink_permissions() -> Result<DiagnosticResult, String> {
     Ok(check_symlink_perms())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 
 pub fn check_node_installation() -> Result<DiagnosticResult, String> {
@@ -184,6 +185,29 @@ fn check_yalc() -> DiagnosticResult {
     }
 }
 
+fn check_verdaccio() -> DiagnosticResult {
+    match std::process::Command::new(cmd_name("verdaccio"))
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => DiagnosticResult {
+            category: "Tools".to_string(),
+            check: "Verdaccio (Local Registry)".to_string(),
+            status: DiagnosticStatus::Pass,
+            message: "Verdaccio is available".to_string(),
+            fix_suggestion: None,
+            fix_command: None,
+        },
+        _ => DiagnosticResult {
+            category: "Tools".to_string(),
+            check: "Verdaccio (Local Registry)".to_string(),
+            status: DiagnosticStatus::Warning,
+            message: "Verdaccio is not installed (needed for local registry feature)".to_string(),
+            fix_suggestion: Some("Run: npm install -g verdaccio".to_string()),
+            fix_command: Some("npm install -g verdaccio".to_string()),
+        },
+    }
+}
 fn check_symlink_perms() -> DiagnosticResult {
     #[cfg(target_os = "windows")]
     {

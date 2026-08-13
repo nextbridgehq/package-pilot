@@ -25,6 +25,7 @@ pub async fn create_link(
         LinkMethod::NpmPack => link_via_pack_internal(&request).await,
         LinkMethod::Yalc => link_via_yalc_internal(&request).await,
         LinkMethod::Workspace => link_via_workspace_internal(&request).await,
+        LinkMethod::LocalRegistry => link_via_registry_internal(&request).await,
         LinkMethod::FileCopy => link_via_file_copy_internal(&request).await,
     };
 
@@ -97,42 +98,49 @@ pub async fn remove_link_internal_logic(
         // Cleanup sandbox if applicable
         let sandbox_base = std::env::temp_dir().join("PackagePilot_Sandboxes");
         if sandbox_base.exists() {
-            if let Ok(safe_target) =
-                crate::utils::safe_path::SafePath::new(&link_clone.target_path, &sandbox_base)
+            let target_path_clone = link_clone.target_path.clone();
+            
+            // First, find and kill any active PTY session sitting in this directory.
+            // This releases the lock powershell.exe might hold on the directory.
+            let mut sessions_to_kill = Vec::new();
             {
-                // First, find and kill any active PTY session sitting in this directory.
-                // This releases the lock powershell.exe might hold on the directory.
-                let mut sessions_to_kill = Vec::new();
-                {
-                    let sessions = pty_state.sessions.lock_safe();
-                    for (sid, session) in sessions.iter() {
-                        if session.directory == link_clone.target_path {
-                            sessions_to_kill.push(sid.clone());
-                        }
+                let sessions = pty_state.sessions.lock_safe();
+                for (sid, session) in sessions.iter() {
+                    if session.directory == target_path_clone {
+                        sessions_to_kill.push(sid.clone());
                     }
-                }
-
-                for sid in sessions_to_kill {
-                    if let Some(mut session) = pty_state.sessions.lock_safe().remove(&sid) {
-                        let _ = session.child.kill();
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                }
-
-                // SECURITY: safe_remove_all_retry canonicalizes and walks the
-                // tree first, refusing if any symlink inside points outside
-                // PackagePilot_Sandboxes — see utils/safe_path.rs.
-                if let Err(e) = safe_target.safe_remove_all_retry(5, 500).await {
-                    state_mutex.add_log(
-                        LogLevel::Error,
-                        format!("Could not delete physical sandbox folder: {}", e),
-                        "LinkManager".to_string(),
-                    );
-                    state_mutex.save();
                 }
             }
-            // If SafePath::new fails, target_path either doesn't exist or isn't
-            // actually under the sandbox boundary — nothing to clean up here.
+
+            for sid in sessions_to_kill {
+                if let Some(mut session) = pty_state.sessions.lock_safe().remove(&sid) {
+                    let _ = session.child.kill();
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+
+            // SECURITY: safe_remove_all_retry canonicalizes and walks the
+            // tree first, refusing if any symlink inside points outside
+            // PackagePilot_Sandboxes — see utils/safe_path.rs.
+            let sandbox_base_clone = sandbox_base.clone();
+            let safe_target_result = tokio::task::spawn_blocking(move || {
+                if let Ok(safe_target) =
+                    crate::utils::safe_path::SafePath::new(&target_path_clone, &sandbox_base_clone)
+                {
+                    safe_target.safe_remove_all_retry(5, 500)
+                } else {
+                    Ok(())
+                }
+            }).await;
+
+            if let Ok(Err(e)) = safe_target_result {
+                state_mutex.add_log(
+                    LogLevel::Error,
+                    format!("Could not delete physical sandbox folder: {}", e),
+                    "LinkManager".to_string(),
+                );
+                state_mutex.save();
+            }
         }
     }
 

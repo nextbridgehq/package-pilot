@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { motion, Variants } from "framer-motion";
 import {
   makeStyles,
   tokens,
@@ -27,11 +28,26 @@ import {
 import { useProjectStore } from "../../store/useProjectStore";
 import { useLinkStore } from "../../store/useLinkStore";
 import { PackageManager } from "../../types/project";
-import { utilityApi } from "../../services/tauriApi";
+import { commands } from "../../bindings";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useSharedStyles } from "../../styles/useSharedStyles";
 import { mergeClasses } from "@fluentui/react-components";
 import { Dialog, DialogTrigger, DialogSurface, DialogTitle, DialogBody, DialogContent, DialogActions, RadioGroup, Radio, Checkbox } from "@fluentui/react-components";
+import { SecurityAuditDialog } from "./SecurityAuditDialog";
+import { DirectorySize } from "../../components/common/DirectorySize";
+
+const containerVariants: Variants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: { staggerChildren: 0.05 }
+  }
+};
+
+const itemVariants: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  show: { opacity: 1, y: 0, transition: { ease: "easeOut", duration: 0.2 } }
+};
 
 const useStyles = makeStyles({
   container: {
@@ -162,6 +178,7 @@ export const PackageList: React.FC<PackageListProps> = ({ onNavigate }) => {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedPkgs, setSelectedPkgs] = useState<Set<string>>(new Set());
   const [removingSelected, setRemovingSelected] = useState(false);
+  const [dirSizes, setDirSizes] = useState<Record<string, number | null>>({});
 
   useEffect(() => {
     fetchProjects();
@@ -171,6 +188,17 @@ export const PackageList: React.FC<PackageListProps> = ({ onNavigate }) => {
   const projectsToDisplay = selectedProject 
     ? projects.filter(p => p.id === selectedProject.id && !projectPendingDeletions.has(p.id))
     : projects.filter(p => !projectPendingDeletions.has(p.id));
+
+  useEffect(() => {
+    const paths = projectsToDisplay.flatMap(p => p.packages.map(pkg => pkg.path));
+    if (paths.length > 0) {
+      commands.getDirectorySizes(paths).then(res => {
+        if (res.status === "ok") {
+          setDirSizes(prev => ({ ...prev, ...res.data }));
+        }
+      }).catch(err => console.error("Failed to fetch directory sizes:", err));
+    }
+  }, [projectsToDisplay]);
 
   const totalPackages = projectsToDisplay.reduce((acc, p) => acc + p.packages.length, 0);
 
@@ -388,6 +416,7 @@ export const PackageList: React.FC<PackageListProps> = ({ onNavigate }) => {
               </Dialog>
             </>
           )}
+          {selectedProject && <SecurityAuditDialog projectId={selectedProject.id} />}
           {totalPackages > 0 && (
             <>
               {!selectMode ? (
@@ -518,42 +547,49 @@ export const PackageList: React.FC<PackageListProps> = ({ onNavigate }) => {
                   <Text size={500} weight="semibold">{project.name}</Text>
                   <Badge appearance="outline">{project.packages.length} {project.packages.length === 1 ? 'package' : 'packages'}</Badge>
                 </div>
-                <div className={styles.packageGrid}>
+                <motion.div className={styles.packageGrid} variants={containerVariants} initial="hidden" animate="show">
                   {project.packages.map((pkg, index) => {
                     const hasActiveLink = activeLinks.some(l => l.source_package === pkg.name && l.target_path === project.path);
                     const pkgKey = `${project.id}:${pkg.name}`;
                     const isSelected = selectedPkgs.has(pkgKey);
                     return (
-                    <Card 
-                      key={`${project.name}-${pkg.name}-${index}`} 
-                      className={mergeClasses(
-                        shared.card,
-                        styles.packageCard,
-                        !selectMode && styles.packageCardClickable,
-                        selectMode && styles.packageCardSelecting,
-                        selectMode && isSelected && styles.packageCardSelected,
-                        !selectMode && hasActiveLink && styles.packageCardLinked,
-                      )}
-                      onClick={() => {
-                        if (selectMode) {
-                          togglePkgSelection(pkgKey);
-                        } else if (onNavigate) {
-                          useLinkStore.getState().setDraft({ sourcePath: pkg.path });
-                          if (hasActiveLink) {
-                            useLinkStore.getState().setPendingTab("active");
-                          } else {
-                            useLinkStore.getState().setPendingTab("create");
-                          }
-                          onNavigate("links");
-                        }
-                      }}
+                    <motion.div
+                      key={`${project.name}-${pkg.name}-${index}`}
+                      variants={itemVariants}
+                      whileHover={{ scale: 1.01 }}
+                      whileTap={{ scale: 0.99 }}
+                      style={{ display: "flex", height: "100%" }}
                     >
-                      {selectMode && (
-                        isSelected
-                          ? <CheckmarkCircleRegular className={styles.selectIcon} style={{ color: tokens.colorStatusDangerForeground1 }} />
-                          : <CircleRegular className={styles.selectIcon} style={{ color: tokens.colorNeutralForeground3 }} />
-                      )}
-                      <div className={styles.packageHeader}>
+                      <Card 
+                        className={mergeClasses(
+                          shared.card,
+                          styles.packageCard,
+                          !selectMode && styles.packageCardClickable,
+                          selectMode && styles.packageCardSelecting,
+                          selectMode && isSelected && styles.packageCardSelected,
+                          !selectMode && hasActiveLink && styles.packageCardLinked,
+                        )}
+                        onClick={() => {
+                          if (selectMode) {
+                            togglePkgSelection(pkgKey);
+                          } else if (onNavigate) {
+                            useLinkStore.getState().setDraft({ sourcePath: pkg.path });
+                            if (hasActiveLink) {
+                              useLinkStore.getState().setPendingTab("active");
+                            } else {
+                              useLinkStore.getState().setPendingTab("create");
+                            }
+                            onNavigate("links");
+                          }
+                        }}
+                        style={{ flex: 1 }}
+                      >
+                        {selectMode && (
+                          isSelected
+                            ? <CheckmarkCircleRegular className={styles.selectIcon} style={{ color: tokens.colorStatusDangerForeground1 }} />
+                            : <CircleRegular className={styles.selectIcon} style={{ color: tokens.colorNeutralForeground3 }} />
+                        )}
+                        <div className={styles.packageHeader}>
                         <div>
                           <Text weight="semibold" size={400}>
                             {pkg.name}
@@ -570,7 +606,7 @@ export const PackageList: React.FC<PackageListProps> = ({ onNavigate }) => {
                             title="Open folder in File Explorer"
                             onClick={(e) => {
                               e.stopPropagation();
-                              utilityApi.openInExplorer(pkg.path);
+                              commands.openInExplorer(pkg.path);
                             }} 
                           />
                           <Button 
@@ -609,6 +645,7 @@ export const PackageList: React.FC<PackageListProps> = ({ onNavigate }) => {
                             Private
                           </Badge>
                         )}
+                        <Badge appearance="outline"><DirectorySize size={dirSizes[pkg.path]} /></Badge>
                       </div>
 
                       <div className={styles.depsSection}>
@@ -663,10 +700,11 @@ export const PackageList: React.FC<PackageListProps> = ({ onNavigate }) => {
                           </div>
                         )}
                       </div>
-                    </Card>
+                      </Card>
+                    </motion.div>
                     );
                   })}
-                </div>
+                </motion.div>
               </div>
             );
           })}

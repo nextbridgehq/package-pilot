@@ -9,5 +9,7 @@ commands.allow = [
     "get_filtered_env_vars",
     "detect_package_manager",
     "get_package_info",
+    "npm_pack_dry_run",
+    "open_url",
     "quit_app",
 ]

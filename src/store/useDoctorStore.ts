@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { DiagnosticResult } from "../services/tauriApi";
+import { DiagnosticResult } from "../bindings";
 
 interface DoctorStore {
   results: DiagnosticResult[];

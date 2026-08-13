@@ -23,6 +23,7 @@ import { LinkListItem } from "./LinkListItem";
 import { LinkCreateForm } from "./LinkCreateForm";
 import { useSharedStyles } from "../../styles/useSharedStyles";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { commands } from "../../bindings";
 
 const useStyles = makeStyles({
   container: {
@@ -35,7 +36,7 @@ const useStyles = makeStyles({
 export const LinkManager: React.FC = () => {
   const styles = useStyles();
   const shared = useSharedStyles();
-  const { activeLinks, pendingDeletions, fetchLinks, removeLink, markForDeletion, undoDeletion, loading, pendingTab, setPendingTab } = useLinkStore();
+  const { activeLinks, pendingDeletions, fetchLinks, markForDeletion, undoDeletion, loading, pendingTab, setPendingTab } = useLinkStore();
   const { projects, pendingDeletions: projectPendingDeletions } = useProjectStore();
   const [tab, setTab] = useState("active");
   const toasterId = useId("link-toaster");
@@ -46,9 +47,10 @@ export const LinkManager: React.FC = () => {
   );
   const displayLinks = activeLinks.filter((l) => !pendingDeletions.has(l.id) && !pendingProjectPaths.has(l.target_path));
 
-  const [runningLinks] = useState<Record<string, boolean>>({});
+  const [runningLinks, setRunningLinks] = useState<Record<string, boolean>>({});
   const terminalRefs = React.useRef<Record<string, TerminalRef | null>>({});
   const parentRef = React.useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: displayLinks.length,
     getScrollElement: () => parentRef.current,
@@ -62,17 +64,48 @@ export const LinkManager: React.FC = () => {
 
   useEffect(() => {
     if (pendingTab) {
-      /* eslint-disable react-hooks/set-state-in-effect */
+       
       setTab(pendingTab);
       setPendingTab(null);
-      /* eslint-enable react-hooks/set-state-in-effect */
+       
     }
   }, [pendingTab, setPendingTab]);
 
+  const setLinkRunning = (linkId: string, isRunning: boolean) => {
+    setRunningLinks((prev) => ({ ...prev, [linkId]: isRunning }));
+  };
+
   const handleRunScript = async (linkId: string, targetPath: string, sourcePackage: string) => {
+    setLinkRunning(linkId, true);
     const terminal = terminalRefs.current[linkId];
-    if (terminal) {
-      terminal.writeCommand(`npx ${sourcePackage} --help`);
+    try {
+      if (terminal) {
+        terminal.writeCommand(`echo "🚀 Running smoke test for ${sourcePackage} in ${targetPath}..."`);
+      }
+      const res = await commands.runSandboxScript(targetPath);
+      if (res.status === "error") throw res.error;
+      const output = res.data;
+      if (terminal) {
+        terminal.write("\r\n--- Smoke Test Output ---\r\n" + output.replace(/\n/g, "\r\n") + "\r\n");
+      }
+      dispatchToast(
+        <Toast>
+          <ToastTitle>Smoke test completed for {sourcePackage}</ToastTitle>
+        </Toast>,
+        { intent: "success" }
+      );
+    } catch (error) {
+      if (terminal) {
+        terminal.write("\r\n❌ Smoke Test Error: " + String(error) + "\r\n");
+      }
+      dispatchToast(
+        <Toast>
+          <ToastTitle>Smoke test failed for {sourcePackage}: {String(error)}</ToastTitle>
+        </Toast>,
+        { intent: "error" }
+      );
+    } finally {
+      setLinkRunning(linkId, false);
     }
   };
 
@@ -171,7 +204,7 @@ export const LinkManager: React.FC = () => {
                     >
                       <LinkListItem
                         link={link}
-                        running={runningLinks[link.id]}
+                        running={Boolean(runningLinks[link.id])}
                         onRemove={handleRemove}
                         onRunScript={handleRunScript}
                         onRefresh={fetchLinks}

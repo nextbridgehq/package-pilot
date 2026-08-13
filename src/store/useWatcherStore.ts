@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { WatcherEvent } from "../types/watcher";
-import { watcherApi } from "../services/tauriApi";
+import { commands } from "../bindings";
 
 interface WatcherStore {
   watcherStatus: Record<string, boolean>;
@@ -18,33 +18,33 @@ export const useWatcherStore = create<WatcherStore>((set) => ({
   events: [],
 
   startWatching: async (linkId: string, path: string) => {
-    try {
-      await watcherApi.startWatching(linkId, path);
+    const result = await commands.startWatching(linkId, path);
+    if (result.status === "ok") {
       set((state) => ({
         watcherStatus: { ...state.watcherStatus, [linkId]: true },
       }));
-    } catch (error) {
-      console.error(`Failed to start watching ${linkId}:`, error);
+    } else {
+      console.error(`Failed to start watching ${linkId}:`, result.error);
     }
   },
 
   stopWatching: async (linkId: string) => {
-    try {
-      await watcherApi.stopWatching(linkId);
+    const result = await commands.stopWatching(linkId);
+    if (result.status === "ok") {
       set((state) => ({
         watcherStatus: { ...state.watcherStatus, [linkId]: false },
       }));
-    } catch (error) {
-      console.error(`Failed to stop watching ${linkId}:`, error);
+    } else {
+      console.error(`Failed to stop watching ${linkId}:`, result.error);
     }
   },
 
   fetchStatus: async () => {
-    try {
-      const status = await watcherApi.getWatcherStatus();
-      set({ watcherStatus: status && typeof status === "object" ? status : {} });
-    } catch (error) {
-      console.error("Failed to fetch watcher status:", error);
+    const result = await commands.getWatcherStatus();
+    if (result.status === "ok") {
+      set({ watcherStatus: result.data && typeof result.data === "object" ? result.data : {} });
+    } else {
+      console.error("Failed to fetch watcher status:", result.error);
       set({ watcherStatus: {} });
     }
   },
