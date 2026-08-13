@@ -207,7 +207,7 @@ fn main() {
 
                 let app_state = app_handle.state::<AppState>();
                 let mut watchers = app_state.watchers.lock_safe();
-                for (_, token) in watchers.iter() {
+                for token in watchers.values() {
                     token.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 watchers.clear();
