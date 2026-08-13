@@ -510,8 +510,9 @@ mod tests {
             !envs.contains_key(std::ffi::OsStr::new("NPM_TOKEN")),
             "secret env vars must not reach the verdaccio process"
         );
+        let has_path = envs.keys().any(|k| k.to_string_lossy().to_uppercase() == "PATH");
         assert!(
-            envs.contains_key(std::ffi::OsStr::new("PATH")),
+            has_path,
             "PATH must survive sanitization or verdaccio can't resolve node/npm"
         );
 

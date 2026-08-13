@@ -305,7 +305,9 @@ packages:
         let sub_info = packages.iter().find(|p| p.name == "sub-lib").unwrap();
         assert!(!sub_info.is_private);
         assert!(sub_info.has_cli);
-        assert_eq!(PathBuf::from(&sub_info.path), sub_dir);
+        let expected_path = dunce::canonicalize(&sub_dir).unwrap_or_else(|_| sub_dir.clone());
+        let actual_path = dunce::canonicalize(PathBuf::from(&sub_info.path)).unwrap_or_else(|_| PathBuf::from(&sub_info.path));
+        assert_eq!(actual_path, expected_path);
         #[cfg(windows)]
         assert!(
             !sub_info.path.contains('/'),
