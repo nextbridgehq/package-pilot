@@ -59,7 +59,6 @@ pub fn kill_process_tree(pid: u32) -> Result<(), String> {
 /// can later reach every descendant, not just the direct child.
 #[cfg(unix)]
 pub fn command_in_new_group(cmd: &mut tokio::process::Command) {
-    use std::os::unix::process::CommandExt;
     unsafe {
         cmd.pre_exec(|| {
             if libc::setpgid(0, 0) != 0 {
