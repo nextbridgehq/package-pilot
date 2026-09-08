@@ -21,7 +21,8 @@ export const UpdaterBanner: React.FC = () => {
             setUpdate(result);
         }
       } catch (error) {
-        console.error('Failed to check for updates:', error);
+        // When updater plugin is not initialized in backend, check() rejects; suppress quietly
+        console.debug('Updater check unavailable:', error);
       }
     };
     checkForUpdates();

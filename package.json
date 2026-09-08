@@ -1,7 +1,7 @@
 {
   "name": "package-pilot",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "An advanced desktop utility for automating local Node.js package testing, sandbox creation, and dependency linking.",
   "author": "Nextbridge",
   "license": "MIT",

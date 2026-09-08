@@ -16,4 +16,5 @@ commands.allow = [
     "run_package_task",
     "run_security_audit",
     "get_directory_size",
+    "get_directory_sizes",
 ]

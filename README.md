@@ -1,6 +1,6 @@
 # Package Pilot
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)
 [![CI](https://github.com/nextbridgehq/package-pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/nextbridgehq/package-pilot/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
@@ -89,4 +89,4 @@ npm run tauri build
 
 [MIT](LICENSE) © [Nextbridge](https://www.nextbridge.com)
 
-Built and maintained by **[Nextbridge](https://nextbridge.com)** — If Package Pilot spared you the usual terminal trial-and-error before publishing, a ⭐ would mean a lot — it helps other deveopers find a better way too.
+Built and maintained by **[Nextbridge](https://nextbridge.com)** — If Package Pilot spared you the usual terminal trial-and-error before publishing, a ⭐ would mean a lot — it helps other developers find a better way too.

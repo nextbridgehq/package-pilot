@@ -55,13 +55,12 @@ const useStyles = makeStyles({
   },
 });
 
-const dagreGraph = new dagre.graphlib.Graph();
-dagreGraph.setDefaultEdgeLabel(() => ({}));
-
 const nodeWidth = 172;
 const nodeHeight = 42;
 
 const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'TB') => {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
   dagreGraph.setGraph({ rankdir: direction });
 
   nodes.forEach((node) => {
@@ -253,15 +252,21 @@ export const TopologyView: React.FC = () => {
 
     const fetchSizes = async () => {
       const newSizes: Record<string, string> = {};
-      for (const pkg of selectedProject.packages) {
-        try {
-          const res = await commands.getDirectorySize(pkg.path);
-          if (res.status === 'ok' && res.data != null) {
-            newSizes[pkg.name] = formatBytes(res.data);
-          } else {
+      const paths = selectedProject.packages.map((pkg) => pkg.path);
+      try {
+        const res = await commands.getDirectorySizes(paths);
+        if (res.status === 'ok' && res.data) {
+          for (const pkg of selectedProject.packages) {
+            const bytes = res.data[pkg.path];
+            newSizes[pkg.name] = bytes != null ? formatBytes(bytes) : '0 B';
+          }
+        } else {
+          for (const pkg of selectedProject.packages) {
             newSizes[pkg.name] = 'Error';
           }
-        } catch {
+        }
+      } catch {
+        for (const pkg of selectedProject.packages) {
           newSizes[pkg.name] = 'Error';
         }
       }

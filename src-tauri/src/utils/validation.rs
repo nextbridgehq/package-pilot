@@ -72,7 +72,10 @@ mod tests {
         assert!(validate_shell_arg("--version").is_ok());
         assert!(validate_shell_arg("@scope/package").is_ok());
         assert!(validate_shell_arg("/usr/local/bin/node").is_ok());
+        #[cfg(windows)]
         assert!(validate_shell_arg("C:\\Users\\dev\\project").is_ok());
+        #[cfg(not(windows))]
+        assert!(validate_shell_arg("C:\\Users\\dev\\project").is_err());
         assert!(validate_shell_arg("--pack-destination").is_ok());
     }
 
