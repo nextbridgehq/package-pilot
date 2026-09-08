@@ -31,48 +31,24 @@ If you have an Ubuntu machine or a Linux VM:
 4. The `.deb` file will be generated in `src-tauri/target/release/bundle/deb/`.
 
 ## Option 2: Automate with GitHub Actions
-The project's existing `.github/workflows/ci.yml` only builds and tests on `windows-latest`, and only triggers on pushes/PRs to `main` — it does not build a `.deb` or run on releases. To get a `.deb` attached to a GitHub Release automatically, add a **separate** workflow file (e.g. `.github/workflows/release.yml`) rather than editing `ci.yml`, since it needs a different trigger (`release`, not `push`/`pull_request`):
 
-```yaml
-name: Release Ubuntu Build
+The repository includes a dedicated cross-platform release workflow [`.github/workflows/release.yml`](../.github/workflows/release.yml) that builds and publishes release packages for Windows (`.msi`, `.exe`), macOS (`.dmg`), and Ubuntu Linux (`.deb`, `.AppImage`).
 
-on:
-  release:
-    types: [created]
+The release workflow triggers automatically on:
+- Pushing a version tag (e.g. `v1.2.0`):
+  ```bash
+  git tag v1.2.0
+  git push origin v1.2.0
+  ```
+- Manual execution via GitHub Actions **Run workflow** (`workflow_dispatch`).
 
-jobs:
-  build-ubuntu:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Build Tauri
-        run: npm run tauri build
-
-      - name: Attach .deb to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: src-tauri/target/release/bundle/deb/*.deb
+### Linux Runner Dependencies
+For Ubuntu runners (including Ubuntu 24.04 Noble), the workflow installs:
+```bash
+sudo apt-get update
+sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 ```
-
-Note: `actions/upload-artifact` (used in some Tauri examples) only stores the file as a downloadable CI run artifact — it does **not** attach it to the GitHub Release itself. `softprops/action-gh-release` does the actual attachment described above.
+Tauri's official action (`tauri-apps/tauri-action`) then builds the `.deb` and `.AppImage` packages and uploads them to the GitHub Release.
 
 ---
 

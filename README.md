@@ -89,4 +89,4 @@ npm run tauri build
 
 [MIT](LICENSE) © [Nextbridge](https://www.nextbridge.com)
 
-Built and maintained by **[Nextbridge](https://nextbridge.com)** — If Package Pilot spared you the usual terminal trial-and-error before publishing, a ⭐ would mean a lot — it helps other deveopers find a better way too.
+Built and maintained by **[Nextbridge](https://nextbridge.com)** — If Package Pilot spared you the usual terminal trial-and-error before publishing, a ⭐ would mean a lot — it helps other developers find a better way too.
