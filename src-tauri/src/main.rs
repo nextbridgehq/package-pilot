@@ -188,6 +188,7 @@ fn main() {
 
             let window = app.get_webview_window("main").unwrap();
             window.set_title("Package Pilot")?;
+            let _ = window.set_focus();
 
             spawn_state_persistence_task(app.handle());
 

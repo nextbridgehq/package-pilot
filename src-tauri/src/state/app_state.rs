@@ -169,6 +169,8 @@ impl AppState {
         if persistent.logs.len() > 1000 {
             persistent.logs.remove(0);
         }
+        drop(persistent);
+        self.save();
     }
 }
 

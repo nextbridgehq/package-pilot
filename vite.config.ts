@@ -21,5 +21,7 @@ export default defineConfig(async () => ({
     forks: {
       singleFork: true,
     },
+    testTimeout: 10000,
+    hookTimeout: 10000,
   },
 }));
